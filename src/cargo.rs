@@ -179,11 +179,11 @@ pub async fn run_cargo(
         (
             TruncatedText {
                 text: String::new(),
-                truncated: false,
+                truncated: true,
             },
             TruncatedText {
                 text: String::new(),
-                truncated: false,
+                truncated: true,
             },
         )
     } else {

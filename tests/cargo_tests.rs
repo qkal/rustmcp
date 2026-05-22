@@ -382,6 +382,7 @@ fn main() {
         output.notes
     );
 
+    wait_for_pid_file(&child_pid_path, Duration::from_secs(2)).await;
     let child_pid = read_pid_file(&child_pid_path);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
@@ -463,6 +464,23 @@ fn read_pid_file(path: &Path) -> u32 {
         .trim()
         .parse()
         .unwrap()
+}
+
+async fn wait_for_pid_file(path: &Path, timeout: Duration) {
+    let started = Instant::now();
+    loop {
+        if fs::read_to_string(path).is_ok_and(|content| !content.trim().is_empty()) {
+            return;
+        }
+
+        assert!(
+            started.elapsed() < timeout,
+            "child pid file {} did not appear within {:?}",
+            path.display(),
+            timeout
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 #[cfg(windows)]
