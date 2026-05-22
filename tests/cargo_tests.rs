@@ -198,6 +198,19 @@ fn rejects_feature_conflicts() {
 }
 
 #[test]
+fn rejects_comma_separated_feature_values() {
+    let params = CargoBuildParams {
+        features: Some(vec!["serde,-Dwarnings".to_string()]),
+        ..CargoBuildParams::default()
+    };
+
+    let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
+
+    assert!(error.to_string().contains("features"));
+    assert!(error.to_string().contains("','"));
+}
+
+#[test]
 fn build_like_commands_default_to_sixty_kib_output_caps() {
     let invocation =
         CargoInvocation::new(CargoCommandKind::Check, &CargoBuildParams::default()).unwrap();
@@ -244,6 +257,14 @@ fn truncate_text_preserves_utf8_boundaries() {
     let truncated = truncate_text("aéz".as_bytes(), 2);
 
     assert_eq!(truncated.text, "a");
+    assert!(truncated.truncated);
+}
+
+#[test]
+fn truncate_text_preserves_invalid_bytes_before_cut() {
+    let truncated = truncate_text(&[b'a', 0xff, b'b', 0xe2, 0x82, 0xac, b'z'], 5);
+
+    assert_eq!(truncated.text, "a\u{fffd}b");
     assert!(truncated.truncated);
 }
 
@@ -384,11 +405,7 @@ fn main() {
 
     wait_for_pid_file(&child_pid_path, Duration::from_secs(2)).await;
     let child_pid = read_pid_file(&child_pid_path);
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(
-        !process_is_alive(child_pid),
-        "descendant process {child_pid} was still alive after cargo timeout cleanup"
-    );
+    wait_for_process_exit(child_pid, Duration::from_secs(3)).await;
 }
 
 #[tokio::test]

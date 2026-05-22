@@ -102,7 +102,7 @@ pub fn truncate_text(bytes: &[u8], max_bytes: usize) -> TruncatedText {
     }
 
     let mut end = max_bytes.min(bytes.len());
-    while end > 0 && std::str::from_utf8(&bytes[..end]).is_err() {
+    while end > 0 && end < bytes.len() && is_utf8_continuation(bytes[end]) {
         end -= 1;
     }
 
@@ -110,6 +110,10 @@ pub fn truncate_text(bytes: &[u8], max_bytes: usize) -> TruncatedText {
         text: String::from_utf8_lossy(&bytes[..end]).into_owned(),
         truncated: true,
     }
+}
+
+fn is_utf8_continuation(byte: u8) -> bool {
+    byte & 0b1100_0000 == 0b1000_0000
 }
 
 pub async fn run_cargo(
@@ -310,7 +314,22 @@ async fn cleanup_process_tree(
         return;
     };
 
-    let process_group = -(pid as libc::pid_t);
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        notes.push(format!(
+            "cargo process tree cleanup skipped because PID {pid} does not fit pid_t"
+        ));
+        kill_child_fallback(child, notes).await;
+        reap_child_after_cleanup(child, notes).await;
+        return;
+    };
+    if pid == 0 {
+        notes.push("cargo process tree cleanup skipped because cargo PID was zero".to_string());
+        kill_child_fallback(child, notes).await;
+        reap_child_after_cleanup(child, notes).await;
+        return;
+    }
+
+    let process_group = -pid;
     let result = unsafe { libc::kill(process_group, libc::SIGKILL) };
     if result == 0 {
         notes.push(format!(
@@ -427,6 +446,8 @@ pub enum CargoValidationError {
     EmptyValue { field: &'static str },
     #[error("cargo option {field} value must not start with '-'")]
     OptionLikeValue { field: &'static str },
+    #[error("cargo option features values must not contain ','")]
+    CommaSeparatedFeature,
     #[error("cargo command kind {kind:?} is not supported by these params")]
     UnsupportedKind { kind: CargoCommandKind },
 }
@@ -635,8 +656,16 @@ fn validate_feature_flags(
     }
     if let Some(features) = features {
         for feature in features {
-            validate_user_value("features", feature)?;
+            validate_feature_value(feature)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_feature_value(value: &str) -> Result<(), CargoValidationError> {
+    validate_user_value("features", value)?;
+    if value.contains(',') {
+        return Err(CargoValidationError::CommaSeparatedFeature);
     }
     Ok(())
 }

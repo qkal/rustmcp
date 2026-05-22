@@ -246,6 +246,7 @@ async fn cargo_metadata_response_omits_duplicate_raw_stdout_when_parsed() {
 
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["result"]["stdout"], "");
+    assert!(payload["result"]["notes"].as_array().unwrap().is_empty());
     assert_eq!(
         payload["result"]["metadata_json"]["packages"][0]["name"],
         "metadata_payload_smoke"

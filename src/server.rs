@@ -189,9 +189,9 @@ impl RaMcpServer {
         };
 
         let mut notes = Self::cargo_notes();
-        notes.extend(output.notes.clone());
+        notes.extend(output.notes.iter().cloned());
         Self::prepare_cargo_output_for_response(kind, &mut output, &mut notes);
-        output.notes = notes.clone();
+        output.notes.clear();
         let truncated = output.stdout_truncated || output.stderr_truncated;
         success(
             tool,

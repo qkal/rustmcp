@@ -238,7 +238,7 @@ Params:
 
 Run fixed `cargo check` in the active workspace.
 
-Cargo tool parameters are structured, validated, and enforced by the server; requests that violate these rules are rejected instead of forwarded to cargo. `workspace` cannot be combined with `package`; `all_features` cannot be combined with `features` or `no_default_features`; string values such as `package`, `features`, `target`, `test_filter`, and `filter_platform` must not be empty or start with `-`.
+Cargo tool parameters are structured, validated, and enforced by the server; requests that violate these rules are rejected instead of forwarded to cargo. `workspace` cannot be combined with `package`; `all_features` cannot be combined with `features` or `no_default_features`; string values such as `package`, `features`, `target`, `test_filter`, and `filter_platform` must not be empty or start with `-`; feature values also must not contain `,`.
 
 Params:
 
