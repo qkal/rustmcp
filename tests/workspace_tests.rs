@@ -31,7 +31,10 @@ fn parent_escape_is_rejected() {
     let workspace = Workspace::new(temp.path()).unwrap();
 
     let err = workspace
-        .resolve_existing_file(format!("../{}", outside.path().file_name().unwrap().to_string_lossy()))
+        .resolve_existing_file(format!(
+            "../{}",
+            outside.path().file_name().unwrap().to_string_lossy()
+        ))
         .unwrap_err()
         .to_string();
 
@@ -78,7 +81,10 @@ fn symlink_escape_is_rejected_on_unix() {
     symlink(outside.path(), &link).unwrap();
     let workspace = Workspace::new(temp.path()).unwrap();
 
-    let err = workspace.resolve_existing_file("link.rs").unwrap_err().to_string();
+    let err = workspace
+        .resolve_existing_file("link.rs")
+        .unwrap_err()
+        .to_string();
 
     assert!(err.contains("outside workspace"));
 }
@@ -89,4 +95,3 @@ fn write_file(root: &Path, path: &str, contents: &str) -> std::path::PathBuf {
     fs::write(&full_path, contents).unwrap();
     full_path
 }
-

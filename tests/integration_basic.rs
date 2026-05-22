@@ -152,7 +152,10 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
         "ra_diagnostics",
         "ra_workspace_diagnostics",
     ] {
-        assert!(names.contains(&expected), "missing {expected}; got {names:?}");
+        assert!(
+            names.contains(&expected),
+            "missing {expected}; got {names:?}"
+        );
     }
 
     child.kill().await.unwrap();

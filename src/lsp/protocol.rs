@@ -44,24 +44,37 @@ pub struct JsonRpcError {
 
 #[derive(Debug, Default, Clone)]
 pub struct DiagnosticsCache {
-    inner: Arc<RwLock<HashMap<Uri, Vec<Diagnostic>>>>,
+    inner: Arc<RwLock<HashMap<String, Vec<Diagnostic>>>>,
 }
 
 impl DiagnosticsCache {
     pub async fn update(&self, uri: Uri, diagnostics: Vec<Diagnostic>) {
-        self.inner.write().await.insert(uri, diagnostics);
+        self.inner
+            .write()
+            .await
+            .insert(uri.as_str().to_string(), diagnostics);
     }
 
     pub async fn get(&self, uri: &Uri) -> Vec<Diagnostic> {
-        self.inner.read().await.get(uri).cloned().unwrap_or_default()
+        self.inner
+            .read()
+            .await
+            .get(uri.as_str())
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub async fn clear(&self) {
         self.inner.write().await.clear();
     }
 
-    pub async fn all(&self) -> HashMap<Uri, Vec<Diagnostic>> {
-        self.inner.read().await.clone()
+    pub async fn all(&self) -> Vec<(String, Vec<Diagnostic>)> {
+        self.inner
+            .read()
+            .await
+            .iter()
+            .map(|(uri, diagnostics)| (uri.clone(), diagnostics.clone()))
+            .collect()
     }
 }
 
@@ -75,4 +88,3 @@ pub fn url_from_lsp_uri(uri: &Uri) -> crate::error::Result<url::Url> {
     url::Url::parse(uri.as_str())
         .map_err(|_| crate::error::RaMcpError::InvalidFileUri(uri.as_str().to_string()))
 }
-

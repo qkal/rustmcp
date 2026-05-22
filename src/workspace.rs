@@ -137,4 +137,3 @@ impl Workspace {
 pub fn is_rust_file(path: &Path) -> bool {
     path.extension() == Some(OsStr::new("rs"))
 }
-

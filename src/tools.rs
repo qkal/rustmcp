@@ -152,7 +152,9 @@ pub fn envelope_text(mut envelope: ToolEnvelope) -> String {
         "message": "tool output exceeded max_total_output_bytes",
         "max_total_output_bytes": DEFAULT_MAX_TOTAL_OUTPUT_BYTES,
     });
-    envelope.notes.push("Result payload was truncated before serialization.".to_string());
+    envelope
+        .notes
+        .push("Result payload was truncated before serialization.".to_string());
     text = serde_json::to_string_pretty(&envelope)
         .unwrap_or_else(|error| format!(r#"{{"ok":false,"error":"{error}"}}"#));
     text
@@ -169,4 +171,3 @@ mod tests {
         assert_eq!(schema_json["title"], "HoverParams");
     }
 }
-

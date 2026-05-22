@@ -10,13 +10,13 @@ use std::{
 };
 
 use lsp_types::{
-    CodeActionContext, CodeActionParams, CodeActionResponse, CompletionParams,
-    CompletionResponse, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, Location, PartialResultParams,
-    Position, PublishDiagnosticsParams, Range, ReferenceContext, ReferenceParams, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
-    VersionedTextDocumentIdentifier, WorkDoneProgressParams,
+    CodeActionContext, CodeActionParams, CodeActionResponse, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, Location, PartialResultParams, Position,
+    PublishDiagnosticsParams, Range, ReferenceContext, ReferenceParams,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -60,7 +60,8 @@ struct OpenDocument {
 
 impl RustAnalyzerClient {
     pub async fn spawn(workspace: Workspace) -> Result<Self> {
-        let analyzer = which::which("rust-analyzer").map_err(|_| RaMcpError::RustAnalyzerMissing)?;
+        let analyzer =
+            which::which("rust-analyzer").map_err(|_| RaMcpError::RustAnalyzerMissing)?;
         let mut command = Command::new(analyzer);
         command
             .current_dir(workspace.root())
@@ -107,12 +108,7 @@ impl RustAnalyzerClient {
         &self.workspace
     }
 
-    pub async fn hover(
-        &mut self,
-        file: &Path,
-        line: u32,
-        character: u32,
-    ) -> Result<Option<Hover>> {
+    pub async fn hover(&mut self, file: &Path, line: u32, character: u32) -> Result<Option<Hover>> {
         let uri = self.open_document(file).await?;
         let params = HoverParams {
             text_document_position_params: position_params(uri, line, character),
@@ -133,7 +129,8 @@ impl RustAnalyzerClient {
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
         };
-        self.request_optional("textDocument/definition", params).await
+        self.request_optional("textDocument/definition", params)
+            .await
     }
 
     pub async fn references(
@@ -157,7 +154,10 @@ impl RustAnalyzerClient {
             .map(Option::unwrap_or_default)
     }
 
-    pub async fn document_symbols(&mut self, file: &Path) -> Result<Option<DocumentSymbolResponse>> {
+    pub async fn document_symbols(
+        &mut self,
+        file: &Path,
+    ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = self.open_document(file).await?;
         let params = DocumentSymbolParams {
             text_document: TextDocumentIdentifier::new(uri),
@@ -181,7 +181,8 @@ impl RustAnalyzerClient {
             partial_result_params: PartialResultParams::default(),
             context: None,
         };
-        self.request_optional("textDocument/completion", params).await
+        self.request_optional("textDocument/completion", params)
+            .await
     }
 
     pub async fn formatting(&mut self, file: &Path) -> Result<Vec<lsp_types::TextEdit>> {
@@ -203,11 +204,7 @@ impl RustAnalyzerClient {
             .map(Option::unwrap_or_default)
     }
 
-    pub async fn code_actions(
-        &mut self,
-        file: &Path,
-        range: Range,
-    ) -> Result<CodeActionResponse> {
+    pub async fn code_actions(&mut self, file: &Path, range: Range) -> Result<CodeActionResponse> {
         let uri = self.open_document(file).await?;
         let diagnostics = self.diagnostics.get(&uri).await;
         let params = CodeActionParams {
@@ -276,12 +273,16 @@ impl RustAnalyzerClient {
         self.diagnostics.get(uri).await
     }
 
-    pub async fn all_diagnostics(&self) -> HashMap<Uri, Vec<lsp_types::Diagnostic>> {
+    pub async fn all_diagnostics(&self) -> Vec<(String, Vec<lsp_types::Diagnostic>)> {
         self.diagnostics.all().await
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        let _ = tokio::time::timeout(Duration::from_secs(5), self.request_value("shutdown", json!(null))).await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.request_value("shutdown", json!(null)),
+        )
+        .await;
         let _ = self.notify("exit", json!(null)).await;
         match tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await {
             Ok(Ok(_)) => Ok(()),
@@ -361,7 +362,9 @@ impl RustAnalyzerClient {
         P: serde::Serialize,
         T: serde::de::DeserializeOwned,
     {
-        let value = self.request_value(method, serde_json::to_value(params)?).await?;
+        let value = self
+            .request_value(method, serde_json::to_value(params)?)
+            .await?;
         if value.is_null() {
             Ok(None)
         } else {
@@ -568,7 +571,9 @@ async fn handle_notification(diagnostics: &DiagnosticsCache, value: Value) {
                 }
             }
         }
-        "window/logMessage" | "$/progress" => debug!(method, message = %value, "rust-analyzer notification"),
+        "window/logMessage" | "$/progress" => {
+            debug!(method, message = %value, "rust-analyzer notification")
+        }
         _ => debug!(method, "unhandled rust-analyzer notification"),
     }
 }

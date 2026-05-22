@@ -13,7 +13,10 @@ fn encode_content_length_frame_counts_utf8_bytes() {
     let body = &frame[split + 4..];
 
     assert!(header.contains(&format!("Content-Length: {}", body.len())));
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(body).unwrap(), value);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(body).unwrap(),
+        value
+    );
 }
 
 #[test]
@@ -72,4 +75,3 @@ fn decoder_tolerates_extra_headers() {
 
     assert_eq!(decoder.next_message().unwrap().unwrap(), value);
 }
-

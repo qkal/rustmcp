@@ -56,4 +56,3 @@ pub fn read_snippet(
         truncated,
     }))
 }
-

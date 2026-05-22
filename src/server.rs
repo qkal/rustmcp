@@ -4,9 +4,7 @@ use lsp_types::{
     CodeActionOrCommand, CompletionResponse, Diagnostic, DiagnosticSeverity,
     GotoDefinitionResponse, Hover, HoverContents, LocationLink, MarkedString, Position, Range,
 };
-use rmcp::{
-    ServerHandler, handler::server::wrapper::Parameters, tool, tool_handler, tool_router,
-};
+use rmcp::{ServerHandler, handler::server::wrapper::Parameters, tool, tool_handler, tool_router};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -58,7 +56,9 @@ impl RaMcpServer {
         })
     }
 
-    async fn ensure_client(state: &mut ServerState) -> crate::error::Result<&mut RustAnalyzerClient> {
+    async fn ensure_client(
+        state: &mut ServerState,
+    ) -> crate::error::Result<&mut RustAnalyzerClient> {
         if state.client.is_none() {
             state.client = Some(RustAnalyzerClient::spawn(state.workspace.clone()).await?);
         }
@@ -99,10 +99,7 @@ impl RaMcpServer {
         name = "ra_set_workspace",
         description = "Change the active Rust workspace root and restart rust-analyzer."
     )]
-    async fn ra_set_workspace(
-        &self,
-        Parameters(params): Parameters<SetWorkspaceParams>,
-    ) -> String {
+    async fn ra_set_workspace(&self, Parameters(params): Parameters<SetWorkspaceParams>) -> String {
         let mut state = self.state.lock().await;
         let old_root = Self::workspace_root(&state);
         let new_workspace = match Workspace::new(&params.workspace_path) {
@@ -149,30 +146,54 @@ impl RaMcpServer {
         )
     }
 
-    #[tool(name = "ra_hover", description = "Get hover/type/documentation information at a position.")]
+    #[tool(
+        name = "ra_hover",
+        description = "Get hover/type/documentation information at a position."
+    )]
     async fn ra_hover(&self, Parameters(params): Parameters<HoverParams>) -> String {
         let mut state = self.state.lock().await;
         let root = Self::workspace_root(&state);
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_hover", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_hover",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let workspace = state.workspace.clone();
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_hover", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_hover",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let hover = match client.hover(&file, params.line, params.character).await {
             Ok(hover) => hover,
             Err(error) => {
-                return failure("ra_hover", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_hover",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
-        let uri = workspace.uri_for_file(&file).map(|uri| uri.to_string()).unwrap_or_default();
+        let uri = workspace
+            .uri_for_file(&file)
+            .map(|uri| uri.to_string())
+            .unwrap_or_default();
         let mut notes = Self::workspace_notes(&workspace);
         if hover.is_none() {
             notes.push("No hover returned. rust-analyzer may still be indexing or the position has no symbol.".to_string());
@@ -192,30 +213,56 @@ impl RaMcpServer {
         )
     }
 
-    #[tool(name = "ra_definition", description = "Find definitions at a position.")]
+    #[tool(
+        name = "ra_definition",
+        description = "Find definitions at a position."
+    )]
     async fn ra_definition(&self, Parameters(params): Parameters<DefinitionParams>) -> String {
         let mut state = self.state.lock().await;
         let root = Self::workspace_root(&state);
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_definition", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_definition",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let workspace = state.workspace.clone();
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_definition", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_definition",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
-        let response = match client.definition(&file, params.line, params.character).await {
+        let response = match client
+            .definition(&file, params.line, params.character)
+            .await
+        {
             Ok(response) => response,
             Err(error) => {
-                return failure("ra_definition", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_definition",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
-        let context_lines = params.context_lines.unwrap_or(DEFAULT_DEFINITION_CONTEXT_LINES);
+        let context_lines = params
+            .context_lines
+            .unwrap_or(DEFAULT_DEFINITION_CONTEXT_LINES);
         let include_snippets = params.include_snippets.unwrap_or(true);
         let mut notes = Self::workspace_notes(&workspace);
         let locations = definition_locations(response)
@@ -243,14 +290,26 @@ impl RaMcpServer {
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_references", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_references",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let workspace = state.workspace.clone();
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_references", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_references",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let references = match client
@@ -264,18 +323,34 @@ impl RaMcpServer {
         {
             Ok(references) => references,
             Err(error) => {
-                return failure("ra_references", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_references",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
 
         let max_results = params.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
         let truncated = references.len() > max_results;
-        let context_lines = params.context_lines.unwrap_or(DEFAULT_REFERENCE_CONTEXT_LINES);
+        let context_lines = params
+            .context_lines
+            .unwrap_or(DEFAULT_REFERENCE_CONTEXT_LINES);
         let include_snippets = params.include_snippets.unwrap_or(true);
         let located = references
             .into_iter()
             .take(max_results)
-            .map(|location| locate(&workspace, location.uri, location.range, context_lines, include_snippets))
+            .map(|location| {
+                locate(
+                    &workspace,
+                    location.uri,
+                    location.range,
+                    context_lines,
+                    include_snippets,
+                )
+            })
             .collect::<Vec<_>>();
 
         success(
@@ -291,7 +366,10 @@ impl RaMcpServer {
         )
     }
 
-    #[tool(name = "ra_document_symbols", description = "List symbols in a Rust source file.")]
+    #[tool(
+        name = "ra_document_symbols",
+        description = "List symbols in a Rust source file."
+    )]
     async fn ra_document_symbols(
         &self,
         Parameters(params): Parameters<DocumentSymbolsParams>,
@@ -301,20 +379,38 @@ impl RaMcpServer {
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_document_symbols", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_document_symbols",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let notes = Self::workspace_notes(&state.workspace);
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_document_symbols", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_document_symbols",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let symbols = match client.document_symbols(&file).await {
             Ok(symbols) => symbols,
             Err(error) => {
-                return failure("ra_document_symbols", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_document_symbols",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         success(
@@ -327,27 +423,51 @@ impl RaMcpServer {
         )
     }
 
-    #[tool(name = "ra_completion", description = "Get completion suggestions at a position.")]
+    #[tool(
+        name = "ra_completion",
+        description = "Get completion suggestions at a position."
+    )]
     async fn ra_completion(&self, Parameters(params): Parameters<CompletionParams>) -> String {
         let mut state = self.state.lock().await;
         let root = Self::workspace_root(&state);
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_completion", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_completion",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let notes = Self::workspace_notes(&state.workspace);
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_completion", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_completion",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
-        let completions = match client.completion(&file, params.line, params.character).await {
+        let completions = match client
+            .completion(&file, params.line, params.character)
+            .await
+        {
             Ok(completions) => completions,
             Err(error) => {
-                return failure("ra_completion", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_completion",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let max_results = params.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
@@ -367,52 +487,95 @@ impl RaMcpServer {
         )
     }
 
-    #[tool(name = "ra_format", description = "Return formatting text edits for a file without applying them.")]
+    #[tool(
+        name = "ra_format",
+        description = "Return formatting text edits for a file without applying them."
+    )]
     async fn ra_format(&self, Parameters(params): Parameters<FormatParams>) -> String {
         let mut state = self.state.lock().await;
         let root = Self::workspace_root(&state);
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_format", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_format",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let mut notes = Self::workspace_notes(&state.workspace);
-        notes.push("This tool returns formatting edits only; it does not mutate files.".to_string());
+        notes
+            .push("This tool returns formatting edits only; it does not mutate files.".to_string());
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_format", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_format",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let edits = match client.formatting(&file).await {
             Ok(edits) => edits,
             Err(error) => {
-                return failure("ra_format", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_format",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
-        success("ra_format", root, &params, json!({ "text_edits": edits }), notes, false)
+        success(
+            "ra_format",
+            root,
+            &params,
+            json!({ "text_edits": edits }),
+            notes,
+            false,
+        )
     }
 
-    #[tool(name = "ra_code_actions", description = "Return available code actions for a selected range without applying edits.")]
-    async fn ra_code_actions(
-        &self,
-        Parameters(params): Parameters<CodeActionsParams>,
-    ) -> String {
+    #[tool(
+        name = "ra_code_actions",
+        description = "Return available code actions for a selected range without applying edits."
+    )]
+    async fn ra_code_actions(&self, Parameters(params): Parameters<CodeActionsParams>) -> String {
         let mut state = self.state.lock().await;
         let root = Self::workspace_root(&state);
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_code_actions", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_code_actions",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let mut notes = Self::workspace_notes(&state.workspace);
-        notes.push("This tool returns code actions only; it does not apply edits or commands.".to_string());
+        notes.push(
+            "This tool returns code actions only; it does not apply edits or commands.".to_string(),
+        );
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_code_actions", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_code_actions",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let actions = match client
@@ -427,7 +590,13 @@ impl RaMcpServer {
         {
             Ok(actions) => actions,
             Err(error) => {
-                return failure("ra_code_actions", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_code_actions",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         success(
@@ -440,27 +609,48 @@ impl RaMcpServer {
         )
     }
 
-    #[tool(name = "ra_diagnostics", description = "Return cached diagnostics for a Rust source file.")]
+    #[tool(
+        name = "ra_diagnostics",
+        description = "Return cached diagnostics for a Rust source file."
+    )]
     async fn ra_diagnostics(&self, Parameters(params): Parameters<DiagnosticsParams>) -> String {
         let mut state = self.state.lock().await;
         let root = Self::workspace_root(&state);
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
-                return failure("ra_diagnostics", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_diagnostics",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let workspace = state.workspace.clone();
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_diagnostics", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_diagnostics",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         let uri = match client.open_document(&file).await {
             Ok(uri) => uri,
             Err(error) => {
-                return failure("ra_diagnostics", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_diagnostics",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         tokio::time::sleep(Duration::from_millis(
@@ -486,7 +676,10 @@ impl RaMcpServer {
         )
     }
 
-    #[tool(name = "ra_workspace_diagnostics", description = "Return known cached diagnostics across the active workspace.")]
+    #[tool(
+        name = "ra_workspace_diagnostics",
+        description = "Return known cached diagnostics across the active workspace."
+    )]
     async fn ra_workspace_diagnostics(
         &self,
         Parameters(params): Parameters<WorkspaceDiagnosticsParams>,
@@ -499,11 +692,19 @@ impl RaMcpServer {
         let client = match Self::ensure_client(&mut state).await {
             Ok(client) => client,
             Err(error) => {
-                return failure("ra_workspace_diagnostics", root, &params, error.to_string(), Self::hint_for_error(&error));
+                return failure(
+                    "ra_workspace_diagnostics",
+                    root,
+                    &params,
+                    error.to_string(),
+                    Self::hint_for_error(&error),
+                );
             }
         };
         tokio::time::sleep(Duration::from_millis(
-            params.wait_ms.unwrap_or(DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS),
+            params
+                .wait_ms
+                .unwrap_or(DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS),
         ))
         .await;
         let all = client.all_diagnostics().await;
@@ -547,7 +748,11 @@ impl ServerHandler for RaMcpServer {}
 fn hover_to_markdown(hover: &Hover) -> String {
     match hover.contents.clone() {
         HoverContents::Scalar(marked) => marked_string(&marked),
-        HoverContents::Array(items) => items.iter().map(marked_string).collect::<Vec<_>>().join("\n\n"),
+        HoverContents::Array(items) => items
+            .iter()
+            .map(marked_string)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         HoverContents::Markup(markup) => markup.value.clone(),
     }
 }
@@ -593,7 +798,8 @@ fn locate(
     let mut notes = Vec::new();
     let snippet = if include_snippet {
         match &classified.path {
-            Some(path) => match read_snippet(path, range, context_lines, DEFAULT_MAX_SNIPPET_BYTES) {
+            Some(path) => match read_snippet(path, range, context_lines, DEFAULT_MAX_SNIPPET_BYTES)
+            {
                 Ok(snippet) => snippet,
                 Err(error) => {
                     notes.push(format!("snippet unavailable: {error}"));

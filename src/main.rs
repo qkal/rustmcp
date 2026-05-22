@@ -86,4 +86,3 @@ fn print_help() {
     eprintln!();
     eprintln!("All MCP protocol messages are written to stdout. Human output is stderr only.");
 }
-

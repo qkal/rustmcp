@@ -31,4 +31,3 @@ pub enum RaMcpError {
 }
 
 pub type Result<T> = std::result::Result<T, RaMcpError>;
-
