@@ -348,6 +348,8 @@ Params:
 }
 ```
 
+When metadata JSON parses successfully, the response includes `metadata_json` and omits the duplicated raw `stdout` payload to keep the MCP response bounded.
+
 ## Safety Model
 
 - User-supplied paths are resolved inside the configured workspace root.

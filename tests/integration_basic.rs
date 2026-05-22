@@ -198,6 +198,71 @@ async fn disabled_cargo_tools_return_structured_failure() {
     child.kill().await.unwrap();
 }
 
+#[tokio::test]
+async fn cargo_metadata_response_omits_duplicate_raw_stdout_when_parsed() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"metadata_payload_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "cargo_metadata",
+                "arguments": { "no_deps": true }
+            }
+        }),
+    )
+    .await;
+    let response = read_mcp_line(&mut stdout).await;
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["result"]["stdout"], "");
+    assert_eq!(
+        payload["result"]["metadata_json"]["packages"][0]["name"],
+        "metadata_payload_smoke"
+    );
+    assert!(
+        payload["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("stdout omitted")),
+        "notes were: {:?}",
+        payload["notes"]
+    );
+
+    child.kill().await.unwrap();
+}
+
 #[test]
 fn help_mentions_disable_cargo_tools() {
     let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");

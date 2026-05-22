@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{
-    cargo::{CargoArgs, CargoCommandKind, CargoInvocation, run_cargo},
+    cargo::{CargoArgs, CargoCommandKind, CargoInvocation, CargoRunOutput, run_cargo},
     error::RaMcpError,
     lsp::{
         client::RustAnalyzerClient,
@@ -190,6 +190,7 @@ impl RaMcpServer {
 
         let mut notes = Self::cargo_notes();
         notes.extend(output.notes.clone());
+        Self::prepare_cargo_output_for_response(kind, &mut output, &mut notes);
         output.notes = notes.clone();
         let truncated = output.stdout_truncated || output.stderr_truncated;
         success(
@@ -200,6 +201,23 @@ impl RaMcpServer {
             notes,
             truncated,
         )
+    }
+
+    fn prepare_cargo_output_for_response(
+        kind: CargoCommandKind,
+        output: &mut CargoRunOutput,
+        notes: &mut Vec<String>,
+    ) {
+        if kind == CargoCommandKind::Metadata
+            && output.metadata_json.is_some()
+            && !output.stdout.is_empty()
+        {
+            output.stdout.clear();
+            notes.push(
+                "Raw cargo metadata stdout omitted from MCP response; use metadata_json."
+                    .to_string(),
+            );
+        }
     }
 }
 

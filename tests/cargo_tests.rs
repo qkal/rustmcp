@@ -392,6 +392,107 @@ fn main() {
 }
 
 #[tokio::test]
+async fn cargo_output_collection_times_out_after_cargo_exits() {
+    let temp = tempfile::tempdir().unwrap();
+    let child_pid_path = temp.path().join("child.pid");
+    write_binary_crate(
+        temp.path(),
+        r#"
+use std::{
+    env,
+    fs,
+    path::PathBuf,
+    process::{Command, Stdio},
+    thread,
+    time::Duration,
+};
+
+fn main() {
+    let marker = PathBuf::from(env::args().nth(1).unwrap());
+    if env::var_os("CARGO_MCP_PIPE_CHILD").is_some() {
+        println!("child keeps stdout open");
+        thread::sleep(Duration::from_secs(2));
+        return;
+    }
+
+    let exe = env::current_exe().unwrap();
+    let child = Command::new(exe)
+        .arg(&marker)
+        .env("CARGO_MCP_PIPE_CHILD", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    fs::write(&marker, child.id().to_string()).unwrap();
+    println!("parent exits while child keeps pipes open");
+}
+"#,
+    );
+
+    let build_output = run_cargo(
+        temp.path(),
+        CargoInvocation {
+            command: "cargo".to_string(),
+            args: vec!["build".to_string(), "--quiet".to_string()],
+            timeout_ms: 60_000,
+            max_stdout_bytes: 1_024,
+            max_stderr_bytes: 1_024,
+            parse_metadata_json: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        build_output.status.success,
+        "stderr was: {}",
+        build_output.stderr
+    );
+
+    let invocation = CargoInvocation {
+        command: "cargo".to_string(),
+        args: vec![
+            "run".to_string(),
+            "--quiet".to_string(),
+            "--".to_string(),
+            child_pid_path.to_string_lossy().into_owned(),
+        ],
+        timeout_ms: 500,
+        max_stdout_bytes: 1_024,
+        max_stderr_bytes: 1_024,
+        parse_metadata_json: false,
+    };
+
+    let started = Instant::now();
+    let output = tokio::time::timeout(Duration::from_secs(1), run_cargo(temp.path(), invocation))
+        .await
+        .expect("run_cargo should bound output collection after cargo exits")
+        .unwrap();
+
+    assert!(output.status.success);
+    assert!(output.timed_out);
+    assert!(output.stdout_truncated);
+    assert!(output.stderr_truncated);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "output collection took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        output
+            .notes
+            .iter()
+            .any(|note| note.contains("output collection stopped")),
+        "notes were: {:?}",
+        output.notes
+    );
+
+    wait_for_pid_file(&child_pid_path, Duration::from_secs(2)).await;
+    let child_pid = read_pid_file(&child_pid_path);
+    wait_for_process_exit(child_pid, Duration::from_secs(3)).await;
+}
+
+#[tokio::test]
 async fn cargo_run_applies_stdout_and_stderr_caps() {
     let temp = tempfile::tempdir().unwrap();
     write_crate_with_build_script(
@@ -477,6 +578,22 @@ async fn wait_for_pid_file(path: &Path, timeout: Duration) {
             started.elapsed() < timeout,
             "child pid file {} did not appear within {:?}",
             path.display(),
+            timeout
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_process_exit(pid: u32, timeout: Duration) {
+    let started = Instant::now();
+    loop {
+        if !process_is_alive(pid) {
+            return;
+        }
+
+        assert!(
+            started.elapsed() < timeout,
+            "process {pid} did not exit within {:?}",
             timeout
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
