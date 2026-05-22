@@ -105,28 +105,7 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
 
-    write_mcp_line(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {"name": "test", "version": "0.0.0"}
-            }
-        }),
-    )
-    .await;
-    let init = read_mcp_line(&mut stdout).await;
-    assert_eq!(init["id"], 1);
-
-    write_mcp_line(
-        &mut stdin,
-        json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
-    )
-    .await;
+    initialize_mcp(&mut stdin, &mut stdout).await;
     write_mcp_line(
         &mut stdin,
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
@@ -151,6 +130,11 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
         "ra_code_actions",
         "ra_diagnostics",
         "ra_workspace_diagnostics",
+        "cargo_check",
+        "cargo_test",
+        "cargo_clippy",
+        "cargo_fmt_check",
+        "cargo_metadata",
     ] {
         assert!(
             names.contains(&expected),
@@ -159,6 +143,167 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
     }
 
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn disabled_cargo_tools_return_structured_failure() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"disabled_cargo_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .arg("--disable-cargo-tools")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "cargo_check",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+    let response = read_mcp_line(&mut stdout).await;
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(payload["ok"], false);
+    assert!(payload["error"].as_str().unwrap().contains("disabled"));
+    assert!(
+        payload["hint"]
+            .as_str()
+            .unwrap()
+            .contains("--disable-cargo-tools")
+    );
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn cargo_metadata_response_omits_duplicate_raw_stdout_when_parsed() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"metadata_payload_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "cargo_metadata",
+                "arguments": { "no_deps": true }
+            }
+        }),
+    )
+    .await;
+    let response = read_mcp_line(&mut stdout).await;
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["result"]["stdout"], "");
+    assert!(payload["result"]["notes"].as_array().unwrap().is_empty());
+    assert_eq!(
+        payload["result"]["metadata_json"]["packages"][0]["name"],
+        "metadata_payload_smoke"
+    );
+    assert!(
+        payload["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("stdout omitted")),
+        "notes were: {:?}",
+        payload["notes"]
+    );
+
+    child.kill().await.unwrap();
+}
+
+#[test]
+fn help_mentions_disable_cargo_tools() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let output = std::process::Command::new(exe)
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--disable-cargo-tools"));
+}
+
+async fn initialize_mcp(
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut tokio::process::ChildStdout,
+) {
+    write_mcp_line(
+        stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0.0.0"}
+            }
+        }),
+    )
+    .await;
+    let init = read_mcp_line(stdout).await;
+    assert_eq!(init["id"], 1);
+
+    write_mcp_line(
+        stdin,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+    )
+    .await;
 }
 
 async fn write_mcp_line(stdin: &mut tokio::process::ChildStdin, value: Value) {

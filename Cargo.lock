@@ -778,6 +778,7 @@ dependencies = [
 name = "rust-analyzer-mcp"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "lsp-types",
  "rmcp",
  "schemars",

@@ -24,6 +24,12 @@ pub enum RaMcpError {
     RustAnalyzerMissing,
     #[error("rust-analyzer process is not running")]
     AnalyzerNotRunning,
+    #[error("cargo was not found on PATH")]
+    CargoMissing,
+    #[error("cargo validation failed: {0}")]
+    CargoValidation(String),
+    #[error("cargo execution failed: {0}")]
+    CargoExecution(String),
     #[error("LSP request failed: {0}")]
     Lsp(String),
     #[error("serialization failed: {0}")]

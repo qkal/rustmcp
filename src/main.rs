@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf};
 
-use rust_analyzer_mcp::server::RaMcpServer;
+use rust_analyzer_mcp::server::{RaMcpServer, ServerConfig};
 use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
 
 struct StderrWriter;
@@ -17,8 +17,8 @@ impl<'a> MakeWriter<'a> for StderrWriter {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    let workspace = match parse_args(env::args().skip(1)) {
-        Ok(Command::Serve { workspace }) => workspace,
+    let (workspace, config) = match parse_args(env::args().skip(1)) {
+        Ok(Command::Serve { workspace, config }) => (workspace, config),
         Ok(Command::Help) => {
             print_help();
             return Ok(());
@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let server = RaMcpServer::new(workspace.unwrap_or(env::current_dir()?))?;
+    let server = RaMcpServer::with_config(workspace.unwrap_or(env::current_dir()?), config)?;
     let running = rmcp::serve_server(server, rmcp::transport::stdio()).await?;
     let _reason = running.waiting().await?;
     Ok(())
@@ -50,7 +50,10 @@ fn init_logging() {
 }
 
 enum Command {
-    Serve { workspace: Option<PathBuf> },
+    Serve {
+        workspace: Option<PathBuf>,
+        config: ServerConfig,
+    },
     Help,
     Version,
 }
@@ -60,6 +63,7 @@ where
     I: IntoIterator<Item = String>,
 {
     let mut workspace = None;
+    let mut config = ServerConfig::default();
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -71,18 +75,27 @@ where
                     .ok_or_else(|| "--workspace requires a path".to_string())?;
                 workspace = Some(PathBuf::from(value));
             }
+            "--disable-cargo-tools" => {
+                config.cargo_tools_enabled = false;
+            }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
 
-    Ok(Command::Serve { workspace })
+    Ok(Command::Serve { workspace, config })
 }
 
 fn print_help() {
     eprintln!("rust-analyzer-mcp");
     eprintln!();
     eprintln!("USAGE:");
-    eprintln!("  rust-analyzer-mcp [--workspace <path>]");
+    eprintln!("  rust-analyzer-mcp [--workspace <path>] [--disable-cargo-tools]");
+    eprintln!();
+    eprintln!("OPTIONS:");
+    eprintln!("  --workspace <path>       Set the Rust workspace root.");
+    eprintln!(
+        "  --disable-cargo-tools    List cargo tools but return structured disabled failures."
+    );
     eprintln!();
     eprintln!("All MCP protocol messages are written to stdout. Human output is stderr only.");
 }
