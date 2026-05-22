@@ -18,6 +18,9 @@ lsp-types = "0.97.0"
 url = "2.5.7"
 which = "8.0.0"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.177"
+
 [dev-dependencies]
 tempfile = "3.23.0"
 

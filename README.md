@@ -2,7 +2,9 @@
 
 `rust-analyzer-mcp` is a local stdio MCP server that gives coding agents Rust IDE intelligence through rust-analyzer.
 
-It exposes readonly MCP tools for hover, definitions, references, document symbols, completions, formatting edits, code actions, diagnostics, workspace diagnostics, and workspace switching. Formatting and code action tools return previews only; they do not mutate files.
+It exposes readonly `ra_*` MCP tools for hover, definitions, references, document symbols, completions, formatting edits, code actions, diagnostics, workspace diagnostics, and workspace switching. Formatting and code action tools return previews only; they do not mutate files.
+
+It also exposes fixed `cargo_*` tools for common Rust verification and workspace inspection: `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, and `cargo_metadata`. Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
 
 ## Prerequisites
 
@@ -25,6 +27,12 @@ cargo build --release
 
 ```sh
 ./target/release/rust-analyzer-mcp --workspace /path/to/project
+```
+
+Disable cargo tools when you want rust-analyzer-only behavior:
+
+```sh
+./target/release/rust-analyzer-mcp --workspace /path/to/project --disable-cargo-tools
 ```
 
 If `--workspace` is omitted, the server uses the current working directory.
@@ -226,6 +234,120 @@ Params:
 { "wait_ms": 3000, "max_files": 100, "max_diagnostics": 300 }
 ```
 
+### `cargo_check`
+
+Run fixed `cargo check` in the active workspace.
+
+Cargo tool parameters are structured and do not accept free-form extra args. `workspace` cannot be combined with `package`; `all_features` cannot be combined with `features` or `no_default_features`; string values such as `package`, `features`, `target`, `test_filter`, and `filter_platform` must not be empty or start with `-`.
+
+Params:
+
+```json
+{
+  "workspace": false,
+  "package": "optional package name",
+  "features": ["optional", "features"],
+  "all_features": false,
+  "no_default_features": false,
+  "target": "optional target triple",
+  "all_targets": false,
+  "locked": false,
+  "offline": false,
+  "frozen": false,
+  "timeout_ms": 120000,
+  "max_stdout_bytes": 60000,
+  "max_stderr_bytes": 60000
+}
+```
+
+### `cargo_test`
+
+Run fixed `cargo test` in the active workspace.
+
+Params:
+
+```json
+{
+  "workspace": false,
+  "package": "optional package name",
+  "features": ["optional", "features"],
+  "all_features": false,
+  "no_default_features": false,
+  "target": "optional target triple",
+  "all_targets": false,
+  "locked": false,
+  "offline": false,
+  "frozen": false,
+  "timeout_ms": 120000,
+  "max_stdout_bytes": 60000,
+  "max_stderr_bytes": 60000,
+  "test_filter": "optional test name or substring",
+  "nocapture": false
+}
+```
+
+### `cargo_clippy`
+
+Run fixed `cargo clippy` in the active workspace. This tool does not append `-- -D warnings`.
+
+Params:
+
+```json
+{
+  "workspace": false,
+  "package": "optional package name",
+  "features": ["optional", "features"],
+  "all_features": false,
+  "no_default_features": false,
+  "target": "optional target triple",
+  "all_targets": false,
+  "locked": false,
+  "offline": false,
+  "frozen": false,
+  "timeout_ms": 120000,
+  "max_stdout_bytes": 60000,
+  "max_stderr_bytes": 60000
+}
+```
+
+### `cargo_fmt_check`
+
+Run fixed `cargo fmt --check` in the active workspace.
+
+Params:
+
+```json
+{
+  "package": "optional package name",
+  "all": false,
+  "timeout_ms": 120000,
+  "max_stdout_bytes": 60000,
+  "max_stderr_bytes": 60000
+}
+```
+
+### `cargo_metadata`
+
+Run fixed `cargo metadata --format-version 1` in the active workspace.
+
+Params:
+
+```json
+{
+  "features": ["optional", "features"],
+  "all_features": false,
+  "no_default_features": false,
+  "filter_platform": "optional target triple",
+  "no_deps": false,
+  "locked": false,
+  "offline": false,
+  "frozen": false,
+  "timeout_ms": 120000,
+  "max_stdout_bytes": 120000,
+  "max_stderr_bytes": 60000
+}
+```
+
 ## Safety Model
 
 - User-supplied paths are resolved inside the configured workspace root.
@@ -233,8 +355,11 @@ Params:
 - Symlink escapes and `..` escapes are rejected.
 - External crate locations returned by rust-analyzer are marked as external dependency source.
 - External snippets are readonly, bounded, and only read when the URI came from rust-analyzer.
-- No shell execution tools are exposed.
-- No write/apply tools are exposed in the MVP.
+- `ra_*` tools are readonly analysis tools.
+- `cargo_*` tools execute fixed cargo commands in the active workspace. They do not expose arbitrary shell commands or free-form cargo subcommands.
+- Cargo commands may execute workspace code, build scripts, proc macros, and tests. Those executions can have arbitrary project-defined side effects, write artifacts under `target/`, and update `Cargo.lock` unless `locked` or `frozen` is used.
+- Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
+- No write/apply file-editing tools are exposed in the MVP.
 
 ## Troubleshooting
 
@@ -254,6 +379,23 @@ Use a directory that exists. The server warns when the workspace root does not c
 ### No diagnostics yet
 
 rust-analyzer may still be indexing. Retry `ra_diagnostics` or increase `wait_ms`.
+
+### cargo not found
+
+Install Rust and make sure `cargo` is on `PATH`:
+
+```sh
+rustup --version
+cargo --version
+```
+
+### cargo tool timed out
+
+Increase `timeout_ms` for large workspaces or run a narrower package/test selection. Timeout cleanup is best effort; the server kills the spawned cargo process and stops output collection after timeout, but it does not claim full process-tree cleanup.
+
+### cargo tools disabled
+
+Restart the server without `--disable-cargo-tools` if you want to use `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, or `cargo_metadata`.
 
 ### stdout logging breaks stdio MCP
 

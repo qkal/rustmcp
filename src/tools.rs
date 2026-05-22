@@ -11,6 +11,12 @@ pub const DEFAULT_MAX_FILES: u32 = 100;
 pub const DEFAULT_MAX_DIAGNOSTICS: u32 = 300;
 pub const DEFAULT_MAX_SNIPPET_BYTES: usize = 8_192;
 pub const DEFAULT_MAX_TOTAL_OUTPUT_BYTES: usize = 120_000;
+pub const DEFAULT_CARGO_TIMEOUT_MS: u64 = 120_000;
+pub const MAX_CARGO_TIMEOUT_MS: u64 = 600_000;
+pub const DEFAULT_CARGO_STDOUT_BYTES: usize = 60_000;
+pub const DEFAULT_CARGO_STDERR_BYTES: usize = 60_000;
+pub const DEFAULT_CARGO_METADATA_STDOUT_BYTES: usize = 120_000;
+pub const MAX_CARGO_OUTPUT_BYTES: usize = 240_000;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
 pub struct SetWorkspaceParams {
@@ -82,6 +88,66 @@ pub struct WorkspaceDiagnosticsParams {
     pub wait_ms: Option<u64>,
     pub max_files: Option<u32>,
     pub max_diagnostics: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, Serialize)]
+pub struct CargoBuildParams {
+    pub workspace: Option<bool>,
+    pub package: Option<String>,
+    pub features: Option<Vec<String>>,
+    pub all_features: Option<bool>,
+    pub no_default_features: Option<bool>,
+    pub target: Option<String>,
+    pub all_targets: Option<bool>,
+    pub locked: Option<bool>,
+    pub offline: Option<bool>,
+    pub frozen: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub max_stdout_bytes: Option<usize>,
+    pub max_stderr_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, Serialize)]
+pub struct CargoTestParams {
+    pub workspace: Option<bool>,
+    pub package: Option<String>,
+    pub features: Option<Vec<String>>,
+    pub all_features: Option<bool>,
+    pub no_default_features: Option<bool>,
+    pub target: Option<String>,
+    pub all_targets: Option<bool>,
+    pub locked: Option<bool>,
+    pub offline: Option<bool>,
+    pub frozen: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub max_stdout_bytes: Option<usize>,
+    pub max_stderr_bytes: Option<usize>,
+    pub test_filter: Option<String>,
+    pub nocapture: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, Serialize)]
+pub struct CargoFmtCheckParams {
+    pub package: Option<String>,
+    pub all: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub max_stdout_bytes: Option<usize>,
+    pub max_stderr_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, Serialize)]
+pub struct CargoMetadataParams {
+    pub features: Option<Vec<String>>,
+    pub all_features: Option<bool>,
+    pub no_default_features: Option<bool>,
+    pub filter_platform: Option<String>,
+    pub no_deps: Option<bool>,
+    pub locked: Option<bool>,
+    pub offline: Option<bool>,
+    pub frozen: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub max_stdout_bytes: Option<usize>,
+    pub max_stderr_bytes: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
