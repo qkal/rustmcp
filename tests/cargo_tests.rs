@@ -588,6 +588,14 @@ fn main() {
         "notes were: {:?}",
         output.notes
     );
+    assert!(
+        output
+            .notes
+            .iter()
+            .any(|note| note.contains("process tree cleanup")),
+        "notes were: {:?}",
+        output.notes
+    );
 
     wait_for_pid_file(&child_pid_path, Duration::from_secs(2)).await;
     let child_pid = read_pid_file(&child_pid_path);

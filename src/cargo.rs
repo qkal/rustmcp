@@ -191,6 +191,7 @@ pub async fn run_cargo(
             OutputCollection::TimedOut => {
                 timed_out = true;
                 notes.push("cargo output collection stopped after timeout".to_string());
+                cleanup_process_tree(child_pid, &mut child, &mut notes).await;
                 truncated_output_pair()
             }
         }
