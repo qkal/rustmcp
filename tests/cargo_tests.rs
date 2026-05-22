@@ -1,7 +1,8 @@
 use std::{
     fs,
+    io::Write,
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -280,6 +281,90 @@ async fn cargo_check_runs_in_workspace_root() {
     assert_eq!(output.command, "cargo");
     assert!(output.status.success, "stderr was: {}", output.stderr);
     assert!(!output.timed_out);
+}
+
+#[test]
+fn cargo_process_stdin_is_null() {
+    let exe = std::env::current_exe().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("stdin.txt");
+    let mut child = Command::new(exe)
+        .args([
+            "--exact",
+            "run_cargo_stdin_is_null_probe",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("CARGO_MCP_STDIN_MARKER", &marker)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"mcp protocol bytes\n")
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(marker).unwrap(), "");
+}
+
+#[tokio::test]
+#[ignore]
+async fn run_cargo_stdin_is_null_probe() {
+    let Some(marker) = std::env::var_os("CARGO_MCP_STDIN_MARKER") else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    write_binary_crate(
+        temp.path(),
+        r#"
+use std::{
+    env,
+    fs,
+    io::{self, Read},
+    path::PathBuf,
+};
+
+fn main() {
+    let marker = PathBuf::from(env::args().nth(1).unwrap());
+    let mut stdin = String::new();
+    io::stdin().read_to_string(&mut stdin).unwrap();
+    fs::write(marker, stdin).unwrap();
+}
+"#,
+    );
+
+    let output = run_cargo(
+        temp.path(),
+        CargoInvocation {
+            command: "cargo".to_string(),
+            args: vec![
+                "run".to_string(),
+                "--quiet".to_string(),
+                "--".to_string(),
+                marker.to_string_lossy().into_owned(),
+            ],
+            timeout_ms: 30_000,
+            max_stdout_bytes: 1_024,
+            max_stderr_bytes: 1_024,
+            parse_metadata_json: false,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(output.status.success, "stderr was: {}", output.stderr);
 }
 
 #[tokio::test]

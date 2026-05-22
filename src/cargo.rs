@@ -129,6 +129,7 @@ pub async fn run_cargo(
     command
         .args(&invocation.args)
         .current_dir(workspace_root)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_process_tree_root(&mut command);
