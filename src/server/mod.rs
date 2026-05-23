@@ -723,6 +723,24 @@ impl RaMcpServer {
     }
 
     #[tool(
+        name = "cargo_build",
+        description = "Run fixed cargo build in the active workspace."
+    )]
+    async fn cargo_build(&self, Parameters(params): Parameters<CargoBuildParams>) -> String {
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_build",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Build,
+        )
+        .await
+    }
+
+    #[tool(
         name = "cargo_check",
         description = "Run fixed cargo check in the active workspace."
     )]
