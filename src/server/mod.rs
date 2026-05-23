@@ -1,0 +1,841 @@
+pub mod response;
+pub(crate) mod state;
+
+use std::{path::PathBuf, sync::Arc, time::Duration};
+
+use lsp_types::{Hover, HoverContents, MarkedString, Position, Range};
+use rmcp::{ServerHandler, handler::server::wrapper::Parameters, tool, tool_handler, tool_router};
+use serde_json::json;
+use tokio::sync::{Mutex, Semaphore};
+
+pub use self::state::ServerConfig;
+use self::{
+    response::{failure, success},
+    state::{ClientHandle, ServerState},
+};
+
+use crate::cargo::params::{
+    CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams,
+};
+use crate::ra::params::{
+    CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
+    DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
+    DEFAULT_REFERENCE_CONTEXT_LINES, DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams,
+    DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams,
+    SetWorkspaceParams, WorkspaceDiagnosticsParams,
+};
+use crate::ra::{
+    completion::completion_items,
+    diagnostics::diagnostic_summary,
+    edits::summarize_code_actions,
+    locate::locate,
+    navigation::{definition_locations, references_truncated},
+    symbols::document_symbols_result,
+};
+use crate::{cargo::CargoCommandKind, error::hint_for_error, workspace::Workspace};
+
+#[derive(Clone)]
+pub struct RaMcpServer {
+    state: Arc<Mutex<ServerState>>,
+    client: ClientHandle,
+    config: ServerConfig,
+    cargo_run_lock: Arc<Semaphore>,
+}
+
+impl RaMcpServer {
+    pub fn new(workspace: PathBuf) -> crate::error::Result<Self> {
+        Self::with_config(workspace, ServerConfig::default())
+    }
+
+    pub fn with_config(workspace: PathBuf, config: ServerConfig) -> crate::error::Result<Self> {
+        Ok(Self {
+            state: Arc::new(Mutex::new(ServerState::new(Workspace::new(workspace)?))),
+            client: ClientHandle::default(),
+            config,
+            cargo_run_lock: Arc::new(Semaphore::new(1)),
+        })
+    }
+
+    async fn cargo_workspace_root(&self) -> (PathBuf, String) {
+        let state = self.state.lock().await;
+        (
+            state.workspace().root().to_path_buf(),
+            state.workspace_root(),
+        )
+    }
+}
+
+#[tool_router]
+impl RaMcpServer {
+    #[tool(
+        name = "ra_set_workspace",
+        description = "Change the active Rust workspace root and restart rust-analyzer."
+    )]
+    async fn ra_set_workspace(&self, Parameters(params): Parameters<SetWorkspaceParams>) -> String {
+        let old_root = self.state.lock().await.workspace_root();
+        let new_workspace = match Workspace::new(&params.workspace_path) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                return failure(
+                    "ra_set_workspace",
+                    old_root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+
+        let mut state = self.state.lock().await;
+        state.set_workspace(new_workspace);
+        let mut notes = state.workspace_notes();
+        let workspace = state.workspace().clone();
+        let workspace_root = state.workspace_root();
+        let warnings = state.workspace().warnings().clone();
+        let restart = match self.client.restart(workspace).await {
+            Ok(()) => true,
+            Err(error) => {
+                notes.push(format!("rust-analyzer did not restart: {error}"));
+                false
+            }
+        };
+
+        success(
+            "ra_set_workspace",
+            workspace_root.clone(),
+            &params,
+            json!({
+                "workspace_root": workspace_root,
+                "rust_analyzer_restarted": restart,
+                "warnings": warnings,
+            }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
+        name = "ra_hover",
+        description = "Get hover/type/documentation information at a position."
+    )]
+    async fn ra_hover(&self, Parameters(params): Parameters<HoverParams>) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_hover",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let mut client = match self.client.ensure_client(workspace.clone()).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_hover",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let hover = match client.hover(&file, params.line, params.character).await {
+            Ok(hover) => hover,
+            Err(error) => {
+                return failure(
+                    "ra_hover",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let uri = workspace
+            .uri_for_file(&file)
+            .map(|uri| uri.to_string())
+            .unwrap_or_default();
+        if hover.is_none() {
+            notes.push("No hover returned. rust-analyzer may still be indexing or the position has no symbol.".to_string());
+        }
+
+        success(
+            "ra_hover",
+            root,
+            &params,
+            json!({
+                "file_uri": uri,
+                "hover": hover.as_ref().map(hover_to_markdown),
+                "raw_hover": hover,
+            }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
+        name = "ra_definition",
+        description = "Find definitions at a position."
+    )]
+    async fn ra_definition(&self, Parameters(params): Parameters<DefinitionParams>) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_definition",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let mut client = match self.client.ensure_client(workspace.clone()).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_definition",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let response = match client
+            .definition(&file, params.line, params.character)
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return failure(
+                    "ra_definition",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let context_lines = params
+            .context_lines
+            .unwrap_or(DEFAULT_DEFINITION_CONTEXT_LINES);
+        let include_snippets = params.include_snippets.unwrap_or(true);
+        let locations = definition_locations(response)
+            .into_iter()
+            .map(|(uri, range)| locate(&workspace, uri, range, context_lines, include_snippets))
+            .collect::<Vec<_>>();
+        if locations.is_empty() {
+            notes.push("No definitions returned.".to_string());
+        }
+
+        success(
+            "ra_definition",
+            root,
+            &params,
+            json!({ "locations": locations }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(name = "ra_references", description = "Find references at a position.")]
+    async fn ra_references(&self, Parameters(params): Parameters<ReferencesParams>) -> String {
+        let (root, file, workspace, notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_references",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let mut client = match self.client.ensure_client(workspace.clone()).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_references",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let references = match client
+            .references(
+                &file,
+                params.line,
+                params.character,
+                params.include_declaration.unwrap_or(true),
+            )
+            .await
+        {
+            Ok(references) => references,
+            Err(error) => {
+                return failure(
+                    "ra_references",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+
+        let max_results = params.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
+        let truncated = references_truncated(references.len(), max_results);
+        let context_lines = params
+            .context_lines
+            .unwrap_or(DEFAULT_REFERENCE_CONTEXT_LINES);
+        let include_snippets = params.include_snippets.unwrap_or(true);
+        let located = references
+            .into_iter()
+            .take(max_results)
+            .map(|location| {
+                locate(
+                    &workspace,
+                    location.uri,
+                    location.range,
+                    context_lines,
+                    include_snippets,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        success(
+            "ra_references",
+            root,
+            &params,
+            json!({
+                "references": located,
+                "max_results": max_results,
+            }),
+            notes,
+            truncated,
+        )
+    }
+
+    #[tool(
+        name = "ra_document_symbols",
+        description = "List symbols in a Rust source file."
+    )]
+    async fn ra_document_symbols(
+        &self,
+        Parameters(params): Parameters<DocumentSymbolsParams>,
+    ) -> String {
+        let (root, file, workspace, notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_document_symbols",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_document_symbols",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let symbols = match client.document_symbols(&file).await {
+            Ok(symbols) => symbols,
+            Err(error) => {
+                return failure(
+                    "ra_document_symbols",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        success(
+            "ra_document_symbols",
+            root,
+            &params,
+            document_symbols_result(symbols),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
+        name = "ra_completion",
+        description = "Get completion suggestions at a position."
+    )]
+    async fn ra_completion(&self, Parameters(params): Parameters<CompletionParams>) -> String {
+        let (root, file, workspace, notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_completion",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_completion",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let completions = match client
+            .completion(&file, params.line, params.character)
+            .await
+        {
+            Ok(completions) => completions,
+            Err(error) => {
+                return failure(
+                    "ra_completion",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let max_results = params.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
+        let (items, total) = completion_items(completions);
+        let truncated = total > max_results;
+        success(
+            "ra_completion",
+            root,
+            &params,
+            json!({
+                "items": items.into_iter().take(max_results).collect::<Vec<_>>(),
+                "total_returned_by_rust_analyzer": total,
+                "max_results": max_results,
+            }),
+            notes,
+            truncated,
+        )
+    }
+
+    #[tool(
+        name = "ra_format",
+        description = "Return formatting text edits for a file without applying them."
+    )]
+    async fn ra_format(&self, Parameters(params): Parameters<FormatParams>) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_format",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        notes
+            .push("This tool returns formatting edits only; it does not mutate files.".to_string());
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_format",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let edits = match client.formatting(&file).await {
+            Ok(edits) => edits,
+            Err(error) => {
+                return failure(
+                    "ra_format",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        success(
+            "ra_format",
+            root,
+            &params,
+            json!({ "text_edits": edits }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
+        name = "ra_code_actions",
+        description = "Return available code actions for a selected range without applying edits."
+    )]
+    async fn ra_code_actions(&self, Parameters(params): Parameters<CodeActionsParams>) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_code_actions",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        notes.push(
+            "This tool returns code actions only; it does not apply edits or commands.".to_string(),
+        );
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_code_actions",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let actions = match client
+            .code_actions(
+                &file,
+                Range::new(
+                    Position::new(params.line, params.character),
+                    Position::new(params.end_line, params.end_character),
+                ),
+            )
+            .await
+        {
+            Ok(actions) => actions,
+            Err(error) => {
+                return failure(
+                    "ra_code_actions",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        success(
+            "ra_code_actions",
+            root,
+            &params,
+            json!({ "code_actions": summarize_code_actions(actions) }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
+        name = "ra_diagnostics",
+        description = "Return cached diagnostics for a Rust source file."
+    )]
+    async fn ra_diagnostics(&self, Parameters(params): Parameters<DiagnosticsParams>) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_diagnostics",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_diagnostics",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let uri = match client.open_document(&file).await {
+            Ok(uri) => uri,
+            Err(error) => {
+                return failure(
+                    "ra_diagnostics",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        tokio::time::sleep(Duration::from_millis(
+            params.wait_ms.unwrap_or(DEFAULT_DIAGNOSTICS_WAIT_MS),
+        ))
+        .await;
+        let diagnostics = client.diagnostics_for(&uri).await;
+        if diagnostics.is_empty() {
+            notes.push("No diagnostics are currently cached for this file; rust-analyzer may still be indexing or the file has no diagnostics.".to_string());
+        }
+        success(
+            "ra_diagnostics",
+            root,
+            &params,
+            json!({
+                "file_uri": uri.as_str(),
+                "summary": diagnostic_summary(&diagnostics),
+                "diagnostics": diagnostics,
+            }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
+        name = "ra_workspace_diagnostics",
+        description = "Return known cached diagnostics across the active workspace."
+    )]
+    async fn ra_workspace_diagnostics(
+        &self,
+        Parameters(params): Parameters<WorkspaceDiagnosticsParams>,
+    ) -> String {
+        let snapshot = {
+            let state = self.state.lock().await;
+            state.workspace_snapshot()
+        };
+        let root = snapshot.root;
+        let max_files = params.max_files.unwrap_or(DEFAULT_MAX_FILES) as usize;
+        let max_diagnostics = params.max_diagnostics.unwrap_or(DEFAULT_MAX_DIAGNOSTICS) as usize;
+        let notes = snapshot.notes;
+        let client = match self.client.ensure_client(snapshot.workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_workspace_diagnostics",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        tokio::time::sleep(Duration::from_millis(
+            params
+                .wait_ms
+                .unwrap_or(DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS),
+        ))
+        .await;
+        let all = client.all_diagnostics().await;
+        let mut total_seen = 0_usize;
+        let mut grouped = Vec::new();
+        for (uri, diagnostics) in all.into_iter().take(max_files) {
+            let remaining = max_diagnostics.saturating_sub(total_seen);
+            if remaining == 0 {
+                break;
+            }
+            let selected = diagnostics.into_iter().take(remaining).collect::<Vec<_>>();
+            total_seen += selected.len();
+            grouped.push(json!({
+                "uri": uri.as_str(),
+                "summary": diagnostic_summary(&selected),
+                "diagnostics": selected,
+            }));
+        }
+        let truncated = grouped.len() >= max_files || total_seen >= max_diagnostics;
+        success(
+            "ra_workspace_diagnostics",
+            root,
+            &params,
+            json!({
+                "files": grouped,
+                "max_files": max_files,
+                "max_diagnostics": max_diagnostics,
+            }),
+            notes,
+            truncated,
+        )
+    }
+
+    #[tool(
+        name = "cargo_check",
+        description = "Run fixed cargo check in the active workspace."
+    )]
+    async fn cargo_check(&self, Parameters(params): Parameters<CargoBuildParams>) -> String {
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_check",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Check,
+        )
+        .await
+    }
+
+    #[tool(
+        name = "cargo_test",
+        description = "Run fixed cargo test in the active workspace."
+    )]
+    async fn cargo_test(&self, Parameters(params): Parameters<CargoTestParams>) -> String {
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_test",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Test,
+        )
+        .await
+    }
+
+    #[tool(
+        name = "cargo_clippy",
+        description = "Run fixed cargo clippy in the active workspace."
+    )]
+    async fn cargo_clippy(&self, Parameters(params): Parameters<CargoBuildParams>) -> String {
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_clippy",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Clippy,
+        )
+        .await
+    }
+
+    #[tool(
+        name = "cargo_fmt_check",
+        description = "Run fixed cargo fmt --check in the active workspace."
+    )]
+    async fn cargo_fmt_check(&self, Parameters(params): Parameters<CargoFmtCheckParams>) -> String {
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_fmt_check",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::FmtCheck,
+        )
+        .await
+    }
+
+    #[tool(
+        name = "cargo_metadata",
+        description = "Run fixed cargo metadata --format-version 1 in the active workspace."
+    )]
+    async fn cargo_metadata(&self, Parameters(params): Parameters<CargoMetadataParams>) -> String {
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_metadata",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Metadata,
+        )
+        .await
+    }
+}
+
+#[tool_handler(
+    name = "rust-analyzer-mcp",
+    instructions = "Rust workspace tools that return structured JSON text. ra_* tools are readonly rust-analyzer IDE queries; cargo_* tools execute fixed cargo commands in the active workspace. Cargo may run workspace code, build scripts, proc macros, and tests with arbitrary project-defined side effects."
+)]
+impl ServerHandler for RaMcpServer {}
+
+fn hover_to_markdown(hover: &Hover) -> String {
+    match hover.contents.clone() {
+        HoverContents::Scalar(marked) => marked_string(&marked),
+        HoverContents::Array(items) => items
+            .iter()
+            .map(marked_string)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        HoverContents::Markup(markup) => markup.value.clone(),
+    }
+}
+
+fn marked_string(marked: &MarkedString) -> String {
+    match marked {
+        MarkedString::String(text) => text.clone(),
+        MarkedString::LanguageString(language) => {
+            format!("```{}\n{}\n```", language.language, language.value)
+        }
+    }
+}
