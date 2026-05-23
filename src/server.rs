@@ -1,3 +1,5 @@
+pub mod response;
+
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use lsp_types::{
@@ -8,6 +10,8 @@ use rmcp::{ServerHandler, handler::server::wrapper::Parameters, tool, tool_handl
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore};
+
+use self::response::{failure, success};
 
 use crate::{
     cargo::{CargoArgs, CargoCommandKind, CargoInvocation, CargoRunOutput, run_cargo},
@@ -23,7 +27,7 @@ use crate::{
         DEFAULT_MAX_RESULTS, DEFAULT_MAX_SNIPPET_BYTES, DEFAULT_REFERENCE_CONTEXT_LINES,
         DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams, DiagnosticsParams,
         DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams, SetWorkspaceParams,
-        WorkspaceDiagnosticsParams, failure, success,
+        WorkspaceDiagnosticsParams,
     },
     workspace::{ClassifiedLocation, LocationKind, Workspace},
 };
