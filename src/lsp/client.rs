@@ -14,9 +14,10 @@ use lsp_types::{
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, Location, PartialResultParams, Position,
-    PublishDiagnosticsParams, Range, ReferenceContext, ReferenceParams,
+    PublishDiagnosticsParams, Range, ReferenceContext, ReferenceParams, RenameParams,
     TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
+    WorkspaceEdit,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -223,6 +224,22 @@ impl RustAnalyzerClient {
             .map(Option::unwrap_or_default)
     }
 
+    pub async fn rename(
+        &mut self,
+        file: &Path,
+        line: u32,
+        character: u32,
+        new_name: String,
+    ) -> Result<Option<WorkspaceEdit>> {
+        let uri = self.open_document(file).await?;
+        let params = RenameParams {
+            text_document_position: position_params(uri, line, character),
+            new_name,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.request_optional("textDocument/rename", params).await
+    }
+
     pub async fn open_document(&mut self, file: &Path) -> Result<Uri> {
         let canonical = self.workspace.resolve_existing_file(file)?;
         let text = tokio::fs::read_to_string(&canonical).await?;
@@ -311,7 +328,10 @@ impl RustAnalyzerClient {
             "capabilities": {
                 "workspace": {
                     "workspaceFolders": true,
-                    "configuration": true
+                    "configuration": true,
+                    "workspaceEdit": {
+                        "documentChanges": true
+                    }
                 },
                 "textDocument": {
                     "hover": {
@@ -338,6 +358,7 @@ impl RustAnalyzerClient {
                             }
                         }
                     },
+                    "rename": {},
                     "publishDiagnostics": {
                         "relatedInformation": true,
                         "versionSupport": true

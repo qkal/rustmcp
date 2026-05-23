@@ -84,6 +84,60 @@ async fn rust_analyzer_smoke_hover_when_available() {
 }
 
 #[tokio::test]
+async fn rust_analyzer_smoke_rename_when_available() {
+    if which::which("rust-analyzer").is_err() {
+        eprintln!("skipping: rust-analyzer not found on PATH");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"ra_mcp_rename_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\npub fn call() -> i32 { answer() }\n",
+    )
+    .unwrap();
+
+    let workspace = Workspace::new(temp.path()).unwrap();
+    let mut client = RustAnalyzerClient::spawn(workspace.clone()).await.unwrap();
+    let file = workspace.resolve_existing_file("src/lib.rs").unwrap();
+    let mut edit = None;
+    for _ in 0..20 {
+        match client
+            .rename(&file, 0, 7, "renamed_answer".to_string())
+            .await
+        {
+            Ok(value) => {
+                edit = value;
+                if edit.is_some() {
+                    break;
+                }
+            }
+            Err(error)
+                if error.to_string().contains("content modified")
+                    || error
+                        .to_string()
+                        .contains("No references found at position") => {}
+            Err(error) => panic!("rename failed: {error}"),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    client.shutdown().await.unwrap();
+
+    let edit = edit.expect("expected rename edit from rust-analyzer");
+    let serialized = serde_json::to_value(edit).unwrap();
+    assert!(
+        serialized.to_string().contains("renamed_answer"),
+        "rename edit was {serialized}"
+    );
+}
+
+#[tokio::test]
 async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
     let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
     let temp = tempfile::tempdir().unwrap();
