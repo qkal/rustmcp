@@ -1,4 +1,3 @@
-use serde::Serialize;
 use thiserror::Error;
 
 use crate::cargo::params::{
@@ -16,7 +15,7 @@ pub enum CargoCommandKind {
     Metadata,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CargoInvocation {
     pub command: String,
     pub args: Vec<String>,

@@ -10,7 +10,7 @@ use crate::{
         output::CargoRunOutput,
         process::run_cargo,
     },
-    error::RaMcpError,
+    error::{RaMcpError, hint_for_error},
     server::response::{failure, success},
 };
 
@@ -102,24 +102,4 @@ fn cargo_notes() -> Vec<String> {
     vec![
         "cargo tools execute fixed cargo commands in the active workspace; cargo may run workspace code, build scripts, proc macros, and tests with arbitrary project-defined side effects, write artifacts under target/, and update Cargo.lock unless locked or frozen is used.".to_string(),
     ]
-}
-
-fn hint_for_error(error: &RaMcpError) -> &'static str {
-    match error {
-        RaMcpError::OutsideWorkspace => "Pass a path relative to the configured Rust workspace.",
-        RaMcpError::RustAnalyzerMissing => {
-            "Install rust-analyzer, for example: rustup component add rust-analyzer."
-        }
-        RaMcpError::FileMissing(_) | RaMcpError::NotAFile(_) => {
-            "Pass an existing Rust source file inside the workspace root."
-        }
-        RaMcpError::CargoMissing => "Install cargo and make sure it is available on PATH.",
-        RaMcpError::CargoValidation(_) => {
-            "Check the cargo tool parameters; only fixed supported cargo flags are accepted."
-        }
-        RaMcpError::CargoExecution(_) => {
-            "Check cargo output, workspace configuration, and whether another process is locking build artifacts."
-        }
-        _ => "Check the workspace path, rust-analyzer installation, and input parameters.",
-    }
 }

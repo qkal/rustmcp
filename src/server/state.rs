@@ -39,26 +39,6 @@ impl ServerState {
     }
 }
 
-pub(crate) fn hint_for_error(error: &RaMcpError) -> &'static str {
-    match error {
-        RaMcpError::OutsideWorkspace => "Pass a path relative to the configured Rust workspace.",
-        RaMcpError::RustAnalyzerMissing => {
-            "Install rust-analyzer, for example: rustup component add rust-analyzer."
-        }
-        RaMcpError::FileMissing(_) | RaMcpError::NotAFile(_) => {
-            "Pass an existing Rust source file inside the workspace root."
-        }
-        RaMcpError::CargoMissing => "Install cargo and make sure it is available on PATH.",
-        RaMcpError::CargoValidation(_) => {
-            "Check the cargo tool parameters; only fixed supported cargo flags are accepted."
-        }
-        RaMcpError::CargoExecution(_) => {
-            "Check cargo output, workspace configuration, and whether another process is locking build artifacts."
-        }
-        _ => "Check the workspace path, rust-analyzer installation, and input parameters.",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::ServerConfig;

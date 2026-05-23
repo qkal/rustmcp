@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, Semaphore};
 pub use self::state::ServerConfig;
 use self::{
     response::{failure, success},
-    state::{ServerState, hint_for_error},
+    state::ServerState,
 };
 
 use crate::cargo::params::{
@@ -32,7 +32,10 @@ use crate::ra::{
     navigation::{definition_locations, references_truncated},
     symbols::document_symbols_result,
 };
-use crate::{cargo::CargoCommandKind, lsp::client::RustAnalyzerClient, workspace::Workspace};
+use crate::{
+    cargo::CargoCommandKind, error::hint_for_error, lsp::client::RustAnalyzerClient,
+    workspace::Workspace,
+};
 
 #[derive(Clone)]
 pub struct RaMcpServer {
