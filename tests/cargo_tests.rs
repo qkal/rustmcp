@@ -6,243 +6,249 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rust_analyzer_mcp::{
-    cargo::{CargoCommandKind, CargoInvocation, run_cargo, truncate_text},
-    tools::{CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams},
+use rust_analyzer_mcp::cargo::{
+    CargoCommandKind, CargoInvocation,
+    params::{CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams},
+    run_cargo, truncate_text,
 };
 
-fn build_params() -> CargoBuildParams {
-    CargoBuildParams {
-        workspace: Some(true),
-        package: None,
-        features: Some(vec!["serde".to_string(), "cli".to_string()]),
-        all_features: Some(false),
-        no_default_features: Some(true),
-        target: Some("x86_64-unknown-linux-gnu".to_string()),
-        all_targets: Some(true),
-        locked: Some(true),
-        offline: Some(false),
-        frozen: Some(false),
-        timeout_ms: Some(30_000),
-        max_stdout_bytes: Some(10_000),
-        max_stderr_bytes: Some(11_000),
+mod argument_construction {
+    use super::*;
+
+    fn build_params() -> CargoBuildParams {
+        CargoBuildParams {
+            workspace: Some(true),
+            package: None,
+            features: Some(vec!["serde".to_string(), "cli".to_string()]),
+            all_features: Some(false),
+            no_default_features: Some(true),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            all_targets: Some(true),
+            locked: Some(true),
+            offline: Some(false),
+            frozen: Some(false),
+            timeout_ms: Some(30_000),
+            max_stdout_bytes: Some(10_000),
+            max_stderr_bytes: Some(11_000),
+        }
     }
-}
 
-#[test]
-fn cargo_check_args_are_built_from_structured_options() {
-    let invocation = CargoInvocation::new(CargoCommandKind::Check, &build_params()).unwrap();
+    #[test]
+    fn cargo_check_args_are_built_from_structured_options() {
+        let invocation = CargoInvocation::new(CargoCommandKind::Check, &build_params()).unwrap();
 
-    assert_eq!(invocation.command, "cargo");
-    assert_eq!(
-        invocation.args,
-        vec![
-            "check",
-            "--workspace",
-            "--features",
-            "serde,cli",
-            "--no-default-features",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "--all-targets",
-            "--locked",
-        ]
-    );
-    assert_eq!(invocation.timeout_ms, 30_000);
-    assert_eq!(invocation.max_stdout_bytes, 10_000);
-    assert_eq!(invocation.max_stderr_bytes, 11_000);
-}
+        assert_eq!(invocation.command, "cargo");
+        assert_eq!(
+            invocation.args,
+            vec![
+                "check",
+                "--workspace",
+                "--features",
+                "serde,cli",
+                "--no-default-features",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--all-targets",
+                "--locked",
+            ]
+        );
+        assert_eq!(invocation.timeout_ms, 30_000);
+        assert_eq!(invocation.max_stdout_bytes, 10_000);
+        assert_eq!(invocation.max_stderr_bytes, 11_000);
+    }
 
-#[test]
-fn cargo_clippy_args_are_built_from_build_params() {
-    let params = CargoBuildParams {
-        all_targets: Some(true),
-        all_features: Some(true),
-        ..CargoBuildParams::default()
-    };
+    #[test]
+    fn cargo_clippy_args_are_built_from_build_params() {
+        let params = CargoBuildParams {
+            all_targets: Some(true),
+            all_features: Some(true),
+            ..CargoBuildParams::default()
+        };
 
-    let invocation = CargoInvocation::new(CargoCommandKind::Clippy, &params).unwrap();
+        let invocation = CargoInvocation::new(CargoCommandKind::Clippy, &params).unwrap();
 
-    assert_eq!(
-        invocation.args,
-        vec!["clippy", "--all-features", "--all-targets"]
-    );
-}
+        assert_eq!(
+            invocation.args,
+            vec!["clippy", "--all-features", "--all-targets"]
+        );
+    }
 
-#[test]
-fn cargo_test_places_filter_before_test_binary_args() {
-    let params = CargoTestParams {
-        workspace: None,
-        package: Some("rust-analyzer-mcp".to_string()),
-        features: None,
-        all_features: None,
-        no_default_features: None,
-        target: None,
-        all_targets: None,
-        locked: None,
-        offline: None,
-        frozen: None,
-        timeout_ms: None,
-        max_stdout_bytes: None,
-        max_stderr_bytes: None,
-        test_filter: Some("workspace".to_string()),
-        nocapture: Some(true),
-    };
+    #[test]
+    fn cargo_test_places_filter_before_test_binary_args() {
+        let params = CargoTestParams {
+            workspace: None,
+            package: Some("rust-analyzer-mcp".to_string()),
+            features: None,
+            all_features: None,
+            no_default_features: None,
+            target: None,
+            all_targets: None,
+            locked: None,
+            offline: None,
+            frozen: None,
+            timeout_ms: None,
+            max_stdout_bytes: None,
+            max_stderr_bytes: None,
+            test_filter: Some("workspace".to_string()),
+            nocapture: Some(true),
+        };
 
-    let invocation = CargoInvocation::new(CargoCommandKind::Test, &params).unwrap();
+        let invocation = CargoInvocation::new(CargoCommandKind::Test, &params).unwrap();
 
-    assert_eq!(
-        invocation.args,
-        vec![
-            "test",
-            "-p",
-            "rust-analyzer-mcp",
-            "workspace",
-            "--",
-            "--nocapture"
-        ]
-    );
-}
+        assert_eq!(
+            invocation.args,
+            vec![
+                "test",
+                "-p",
+                "rust-analyzer-mcp",
+                "workspace",
+                "--",
+                "--nocapture"
+            ]
+        );
+    }
 
-#[test]
-fn cargo_fmt_check_uses_fmt_specific_options() {
-    let params = CargoFmtCheckParams {
-        package: Some("rust-analyzer-mcp".to_string()),
-        all: Some(false),
-        timeout_ms: None,
-        max_stdout_bytes: None,
-        max_stderr_bytes: None,
-    };
+    #[test]
+    fn cargo_fmt_check_uses_fmt_specific_options() {
+        let params = CargoFmtCheckParams {
+            package: Some("rust-analyzer-mcp".to_string()),
+            all: Some(false),
+            timeout_ms: None,
+            max_stdout_bytes: None,
+            max_stderr_bytes: None,
+        };
 
-    let invocation = CargoInvocation::new(CargoCommandKind::FmtCheck, &params).unwrap();
+        let invocation = CargoInvocation::new(CargoCommandKind::FmtCheck, &params).unwrap();
 
-    assert_eq!(
-        invocation.args,
-        vec!["fmt", "--check", "-p", "rust-analyzer-mcp"]
-    );
-}
+        assert_eq!(
+            invocation.args,
+            vec!["fmt", "--check", "-p", "rust-analyzer-mcp"]
+        );
+    }
 
-#[test]
-fn cargo_metadata_args_include_format_version_and_metadata_flags() {
-    let params = CargoMetadataParams {
-        features: Some(vec!["server".to_string()]),
-        all_features: None,
-        no_default_features: Some(true),
-        filter_platform: Some("x86_64-pc-windows-msvc".to_string()),
-        no_deps: Some(true),
-        locked: Some(true),
-        offline: None,
-        frozen: None,
-        timeout_ms: None,
-        max_stdout_bytes: None,
-        max_stderr_bytes: None,
-    };
+    #[test]
+    fn cargo_metadata_args_include_format_version_and_metadata_flags() {
+        let params = CargoMetadataParams {
+            features: Some(vec!["server".to_string()]),
+            all_features: None,
+            no_default_features: Some(true),
+            filter_platform: Some("x86_64-pc-windows-msvc".to_string()),
+            no_deps: Some(true),
+            locked: Some(true),
+            offline: None,
+            frozen: None,
+            timeout_ms: None,
+            max_stdout_bytes: None,
+            max_stderr_bytes: None,
+        };
 
-    let invocation = CargoInvocation::new(CargoCommandKind::Metadata, &params).unwrap();
+        let invocation = CargoInvocation::new(CargoCommandKind::Metadata, &params).unwrap();
 
-    assert_eq!(
-        invocation.args,
-        vec![
-            "metadata",
-            "--format-version",
-            "1",
-            "--features",
-            "server",
-            "--no-default-features",
-            "--filter-platform",
-            "x86_64-pc-windows-msvc",
-            "--no-deps",
-            "--locked",
-        ]
-    );
-}
+        assert_eq!(
+            invocation.args,
+            vec![
+                "metadata",
+                "--format-version",
+                "1",
+                "--features",
+                "server",
+                "--no-default-features",
+                "--filter-platform",
+                "x86_64-pc-windows-msvc",
+                "--no-deps",
+                "--locked",
+            ]
+        );
+    }
 
-#[test]
-fn rejects_conflicting_workspace_and_package() {
-    let params = CargoBuildParams {
-        workspace: Some(true),
-        package: Some("rust-analyzer-mcp".to_string()),
-        ..CargoBuildParams::default()
-    };
+    #[test]
+    fn rejects_conflicting_workspace_and_package() {
+        let params = CargoBuildParams {
+            workspace: Some(true),
+            package: Some("rust-analyzer-mcp".to_string()),
+            ..CargoBuildParams::default()
+        };
 
-    let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
+        let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
 
-    assert!(error.to_string().contains("workspace"));
-    assert!(error.to_string().contains("package"));
-}
+        assert!(error.to_string().contains("workspace"));
+        assert!(error.to_string().contains("package"));
+    }
 
-#[test]
-fn rejects_option_like_user_values() {
-    let params = CargoBuildParams {
-        package: Some("--all".to_string()),
-        ..CargoBuildParams::default()
-    };
+    #[test]
+    fn rejects_option_like_user_values() {
+        let params = CargoBuildParams {
+            package: Some("--all".to_string()),
+            ..CargoBuildParams::default()
+        };
 
-    let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
+        let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
 
-    assert!(error.to_string().contains("package"));
-    assert!(error.to_string().contains("must not start with '-'"));
-}
+        assert!(error.to_string().contains("package"));
+        assert!(error.to_string().contains("must not start with '-'"));
+    }
 
-#[test]
-fn rejects_feature_conflicts() {
-    let params = CargoBuildParams {
-        features: Some(vec!["serde".to_string()]),
-        all_features: Some(true),
-        ..CargoBuildParams::default()
-    };
+    #[test]
+    fn rejects_feature_conflicts() {
+        let params = CargoBuildParams {
+            features: Some(vec!["serde".to_string()]),
+            all_features: Some(true),
+            ..CargoBuildParams::default()
+        };
 
-    let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
+        let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
 
-    assert!(error.to_string().contains("all_features"));
-    assert!(error.to_string().contains("features"));
-}
+        assert!(error.to_string().contains("all_features"));
+        assert!(error.to_string().contains("features"));
+    }
 
-#[test]
-fn rejects_comma_separated_feature_values() {
-    let params = CargoBuildParams {
-        features: Some(vec!["serde,-Dwarnings".to_string()]),
-        ..CargoBuildParams::default()
-    };
+    #[test]
+    fn rejects_comma_separated_feature_values() {
+        let params = CargoBuildParams {
+            features: Some(vec!["serde,-Dwarnings".to_string()]),
+            ..CargoBuildParams::default()
+        };
 
-    let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
+        let error = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap_err();
 
-    assert!(error.to_string().contains("features"));
-    assert!(error.to_string().contains("','"));
-}
+        assert!(error.to_string().contains("features"));
+        assert!(error.to_string().contains("','"));
+    }
 
-#[test]
-fn build_like_commands_default_to_sixty_kib_output_caps() {
-    let invocation =
-        CargoInvocation::new(CargoCommandKind::Check, &CargoBuildParams::default()).unwrap();
+    #[test]
+    fn build_like_commands_default_to_sixty_kib_output_caps() {
+        let invocation =
+            CargoInvocation::new(CargoCommandKind::Check, &CargoBuildParams::default()).unwrap();
 
-    assert_eq!(invocation.max_stdout_bytes, 60_000);
-    assert_eq!(invocation.max_stderr_bytes, 60_000);
-}
+        assert_eq!(invocation.max_stdout_bytes, 60_000);
+        assert_eq!(invocation.max_stderr_bytes, 60_000);
+    }
 
-#[test]
-fn cargo_metadata_defaults_to_larger_stdout_cap() {
-    let invocation =
-        CargoInvocation::new(CargoCommandKind::Metadata, &CargoMetadataParams::default()).unwrap();
+    #[test]
+    fn cargo_metadata_defaults_to_larger_stdout_cap() {
+        let invocation =
+            CargoInvocation::new(CargoCommandKind::Metadata, &CargoMetadataParams::default())
+                .unwrap();
 
-    assert_eq!(invocation.max_stdout_bytes, 120_000);
-    assert_eq!(invocation.max_stderr_bytes, 60_000);
-}
+        assert_eq!(invocation.max_stdout_bytes, 120_000);
+        assert_eq!(invocation.max_stderr_bytes, 60_000);
+    }
 
-#[test]
-fn clamps_limits_to_hard_maximums() {
-    let params = CargoBuildParams {
-        timeout_ms: Some(999_999),
-        max_stdout_bytes: Some(999_999),
-        max_stderr_bytes: Some(999_999),
-        ..CargoBuildParams::default()
-    };
+    #[test]
+    fn clamps_limits_to_hard_maximums() {
+        let params = CargoBuildParams {
+            timeout_ms: Some(999_999),
+            max_stdout_bytes: Some(999_999),
+            max_stderr_bytes: Some(999_999),
+            ..CargoBuildParams::default()
+        };
 
-    let invocation = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap();
+        let invocation = CargoInvocation::new(CargoCommandKind::Check, &params).unwrap();
 
-    assert_eq!(invocation.timeout_ms, 600_000);
-    assert_eq!(invocation.max_stdout_bytes, 240_000);
-    assert_eq!(invocation.max_stderr_bytes, 240_000);
+        assert_eq!(invocation.timeout_ms, 600_000);
+        assert_eq!(invocation.max_stdout_bytes, 240_000);
+        assert_eq!(invocation.max_stderr_bytes, 240_000);
+    }
 }
 
 #[test]
