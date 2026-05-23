@@ -268,6 +268,14 @@ fn truncate_text_preserves_utf8_boundaries() {
 }
 
 #[test]
+fn truncate_text_allows_exact_utf8_boundary() {
+    let truncated = truncate_text("éz".as_bytes(), "é".len());
+
+    assert_eq!(truncated.text, "é");
+    assert!(truncated.truncated);
+}
+
+#[test]
 fn truncate_text_preserves_invalid_bytes_before_cut() {
     let truncated = truncate_text(&[b'a', 0xff, b'b', 0xe2, 0x82, 0xac, b'z'], 5);
 
