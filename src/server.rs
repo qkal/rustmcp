@@ -25,7 +25,7 @@ use crate::ra::params::{
     WorkspaceDiagnosticsParams,
 };
 use crate::{
-    cargo::{CargoArgs, CargoCommandKind, CargoInvocation, CargoRunOutput, run_cargo},
+    cargo::CargoCommandKind,
     error::RaMcpError,
     lsp::{
         client::RustAnalyzerClient,
@@ -128,102 +128,12 @@ impl RaMcpServer {
         }
     }
 
-    fn cargo_notes() -> Vec<String> {
-        vec![
-            "cargo tools execute fixed cargo commands in the active workspace; cargo may run workspace code, build scripts, proc macros, and tests with arbitrary project-defined side effects, write artifacts under target/, and update Cargo.lock unless locked or frozen is used.".to_string(),
-        ]
-    }
-
     async fn cargo_workspace_root(&self) -> (PathBuf, String) {
         let state = self.state.lock().await;
         (
             state.workspace.root().to_path_buf(),
             Self::workspace_root(&state),
         )
-    }
-
-    async fn run_cargo_tool<T>(
-        &self,
-        tool: &'static str,
-        params: T,
-        kind: CargoCommandKind,
-    ) -> String
-    where
-        T: CargoArgs + Serialize,
-    {
-        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
-        if !self.config.cargo_tools_enabled {
-            return failure(
-                tool,
-                workspace_root,
-                &params,
-                "cargo tools are disabled",
-                "Restart without --disable-cargo-tools to enable cargo tool execution.",
-            );
-        }
-
-        let invocation = match CargoInvocation::new(kind, &params) {
-            Ok(invocation) => invocation,
-            Err(error) => {
-                let error = RaMcpError::CargoValidation(error.to_string());
-                return failure(
-                    tool,
-                    workspace_root,
-                    &params,
-                    error.to_string(),
-                    Self::hint_for_error(&error),
-                );
-            }
-        };
-
-        let _permit = self
-            .cargo_run_lock
-            .acquire()
-            .await
-            .expect("cargo semaphore is never closed");
-        let mut output = match run_cargo(&workspace_path, invocation).await {
-            Ok(output) => output,
-            Err(error) => {
-                return failure(
-                    tool,
-                    workspace_root,
-                    &params,
-                    error.to_string(),
-                    Self::hint_for_error(&error),
-                );
-            }
-        };
-
-        let mut notes = Self::cargo_notes();
-        notes.extend(output.notes.iter().cloned());
-        Self::prepare_cargo_output_for_response(kind, &mut output, &mut notes);
-        output.notes.clear();
-        let truncated = output.stdout_truncated || output.stderr_truncated;
-        success(
-            tool,
-            workspace_root,
-            &params,
-            json!(output),
-            notes,
-            truncated,
-        )
-    }
-
-    fn prepare_cargo_output_for_response(
-        kind: CargoCommandKind,
-        output: &mut CargoRunOutput,
-        notes: &mut Vec<String>,
-    ) {
-        if kind == CargoCommandKind::Metadata
-            && output.metadata_json.is_some()
-            && !output.stdout.is_empty()
-        {
-            output.stdout.clear();
-            notes.push(
-                "Raw cargo metadata stdout omitted from MCP response; use metadata_json."
-                    .to_string(),
-            );
-        }
     }
 }
 
@@ -877,8 +787,17 @@ impl RaMcpServer {
         description = "Run fixed cargo check in the active workspace."
     )]
     async fn cargo_check(&self, Parameters(params): Parameters<CargoBuildParams>) -> String {
-        self.run_cargo_tool("cargo_check", params, CargoCommandKind::Check)
-            .await
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_check",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Check,
+        )
+        .await
     }
 
     #[tool(
@@ -886,8 +805,17 @@ impl RaMcpServer {
         description = "Run fixed cargo test in the active workspace."
     )]
     async fn cargo_test(&self, Parameters(params): Parameters<CargoTestParams>) -> String {
-        self.run_cargo_tool("cargo_test", params, CargoCommandKind::Test)
-            .await
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_test",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Test,
+        )
+        .await
     }
 
     #[tool(
@@ -895,8 +823,17 @@ impl RaMcpServer {
         description = "Run fixed cargo clippy in the active workspace."
     )]
     async fn cargo_clippy(&self, Parameters(params): Parameters<CargoBuildParams>) -> String {
-        self.run_cargo_tool("cargo_clippy", params, CargoCommandKind::Clippy)
-            .await
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_clippy",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Clippy,
+        )
+        .await
     }
 
     #[tool(
@@ -904,8 +841,17 @@ impl RaMcpServer {
         description = "Run fixed cargo fmt --check in the active workspace."
     )]
     async fn cargo_fmt_check(&self, Parameters(params): Parameters<CargoFmtCheckParams>) -> String {
-        self.run_cargo_tool("cargo_fmt_check", params, CargoCommandKind::FmtCheck)
-            .await
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_fmt_check",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::FmtCheck,
+        )
+        .await
     }
 
     #[tool(
@@ -913,8 +859,17 @@ impl RaMcpServer {
         description = "Run fixed cargo metadata --format-version 1 in the active workspace."
     )]
     async fn cargo_metadata(&self, Parameters(params): Parameters<CargoMetadataParams>) -> String {
-        self.run_cargo_tool("cargo_metadata", params, CargoCommandKind::Metadata)
-            .await
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_metadata",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Metadata,
+        )
+        .await
     }
 }
 
