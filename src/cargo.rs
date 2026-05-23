@@ -1,3 +1,5 @@
+pub mod params;
+
 use std::{
     path::Path,
     process::{Command as StdCommand, Stdio},
@@ -8,12 +10,12 @@ use serde::Serialize;
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, process::Command as TokioCommand, task::JoinHandle};
 
-use crate::error::{RaMcpError, Result as CrateResult};
-use crate::tools::{
+use crate::cargo::params::{
     CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams,
     DEFAULT_CARGO_METADATA_STDOUT_BYTES, DEFAULT_CARGO_STDERR_BYTES, DEFAULT_CARGO_STDOUT_BYTES,
     DEFAULT_CARGO_TIMEOUT_MS, MAX_CARGO_OUTPUT_BYTES, MAX_CARGO_TIMEOUT_MS,
 };
+use crate::error::{RaMcpError, Result as CrateResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CargoCommandKind {

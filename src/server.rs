@@ -13,21 +13,23 @@ use tokio::sync::{Mutex, Semaphore};
 
 use self::response::{failure, success};
 
+use crate::cargo::params::{
+    CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams,
+};
+use crate::ra::params::{
+    CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
+    DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
+    DEFAULT_MAX_SNIPPET_BYTES, DEFAULT_REFERENCE_CONTEXT_LINES,
+    DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams, DiagnosticsParams,
+    DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams, SetWorkspaceParams,
+    WorkspaceDiagnosticsParams,
+};
 use crate::{
     cargo::{CargoArgs, CargoCommandKind, CargoInvocation, CargoRunOutput, run_cargo},
     error::RaMcpError,
     lsp::{
         client::RustAnalyzerClient,
         snippets::{SourceSnippet, read_snippet},
-    },
-    tools::{
-        CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams,
-        CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
-        DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES,
-        DEFAULT_MAX_RESULTS, DEFAULT_MAX_SNIPPET_BYTES, DEFAULT_REFERENCE_CONTEXT_LINES,
-        DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams, DiagnosticsParams,
-        DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams, SetWorkspaceParams,
-        WorkspaceDiagnosticsParams,
     },
     workspace::{ClassifiedLocation, LocationKind, Workspace},
 };
