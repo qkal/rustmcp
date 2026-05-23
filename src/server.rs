@@ -2,13 +2,9 @@ pub mod response;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use lsp_types::{
-    CodeActionOrCommand, CompletionResponse, Diagnostic, DiagnosticSeverity,
-    GotoDefinitionResponse, Hover, HoverContents, LocationLink, MarkedString, Position, Range,
-};
+use lsp_types::{Hover, HoverContents, MarkedString, Position, Range};
 use rmcp::{ServerHandler, handler::server::wrapper::Parameters, tool, tool_handler, tool_router};
-use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::sync::{Mutex, Semaphore};
 
 use self::response::{failure, success};
@@ -19,19 +15,21 @@ use crate::cargo::params::{
 use crate::ra::params::{
     CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
     DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
-    DEFAULT_MAX_SNIPPET_BYTES, DEFAULT_REFERENCE_CONTEXT_LINES,
-    DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams, DiagnosticsParams,
-    DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams, SetWorkspaceParams,
-    WorkspaceDiagnosticsParams,
+    DEFAULT_REFERENCE_CONTEXT_LINES, DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams,
+    DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams,
+    SetWorkspaceParams, WorkspaceDiagnosticsParams,
+};
+use crate::ra::{
+    completion::completion_items,
+    diagnostics::diagnostic_summary,
+    edits::summarize_code_actions,
+    locate::locate,
+    navigation::{definition_locations, references_truncated},
+    symbols::document_symbols_result,
 };
 use crate::{
-    cargo::CargoCommandKind,
-    error::RaMcpError,
-    lsp::{
-        client::RustAnalyzerClient,
-        snippets::{SourceSnippet, read_snippet},
-    },
-    workspace::{ClassifiedLocation, LocationKind, Workspace},
+    cargo::CargoCommandKind, error::RaMcpError, lsp::client::RustAnalyzerClient,
+    workspace::Workspace,
 };
 
 #[derive(Clone)]
@@ -57,16 +55,6 @@ impl Default for ServerConfig {
 struct ServerState {
     workspace: Workspace,
     client: Option<RustAnalyzerClient>,
-}
-
-#[derive(Debug, Serialize)]
-struct LocatedRange {
-    uri: String,
-    path: Option<String>,
-    kind: LocationKind,
-    range: Range,
-    snippet: Option<SourceSnippet>,
-    notes: Vec<String>,
 }
 
 impl RaMcpServer {
@@ -378,7 +366,7 @@ impl RaMcpServer {
         };
 
         let max_results = params.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
-        let truncated = references.len() > max_results;
+        let truncated = references_truncated(references.len(), max_results);
         let context_lines = params
             .context_lines
             .unwrap_or(DEFAULT_REFERENCE_CONTEXT_LINES);
@@ -461,7 +449,7 @@ impl RaMcpServer {
             "ra_document_symbols",
             root,
             &params,
-            json!({ "symbols": symbols }),
+            document_symbols_result(symbols),
             notes,
             false,
         )
@@ -898,129 +886,4 @@ fn marked_string(marked: &MarkedString) -> String {
             format!("```{}\n{}\n```", language.language, language.value)
         }
     }
-}
-
-fn definition_locations(response: Option<GotoDefinitionResponse>) -> Vec<(lsp_types::Uri, Range)> {
-    match response {
-        Some(GotoDefinitionResponse::Scalar(location)) => vec![(location.uri, location.range)],
-        Some(GotoDefinitionResponse::Array(locations)) => locations
-            .into_iter()
-            .map(|location| (location.uri, location.range))
-            .collect(),
-        Some(GotoDefinitionResponse::Link(links)) => links
-            .into_iter()
-            .map(|link: LocationLink| (link.target_uri, link.target_selection_range))
-            .collect(),
-        None => Vec::new(),
-    }
-}
-
-fn locate(
-    workspace: &Workspace,
-    uri: lsp_types::Uri,
-    range: Range,
-    context_lines: u32,
-    include_snippet: bool,
-) -> LocatedRange {
-    let classified = workspace
-        .classify_lsp_uri(&uri)
-        .unwrap_or_else(|_| ClassifiedLocation {
-            uri: uri.as_str().to_string(),
-            kind: LocationKind::NonFileUri,
-            path: None,
-        });
-    let mut notes = Vec::new();
-    let snippet = if include_snippet {
-        match &classified.path {
-            Some(path) => match read_snippet(path, range, context_lines, DEFAULT_MAX_SNIPPET_BYTES)
-            {
-                Ok(snippet) => snippet,
-                Err(error) => {
-                    notes.push(format!("snippet unavailable: {error}"));
-                    None
-                }
-            },
-            None => {
-                notes.push("snippet unavailable for non-file or missing URI".to_string());
-                None
-            }
-        }
-    } else {
-        None
-    };
-    LocatedRange {
-        uri: classified.uri,
-        path: classified.path.map(|path| path.display().to_string()),
-        kind: classified.kind,
-        range,
-        snippet,
-        notes,
-    }
-}
-
-fn completion_items(response: Option<CompletionResponse>) -> (Vec<Value>, usize) {
-    let items = match response {
-        Some(CompletionResponse::Array(items)) => items,
-        Some(CompletionResponse::List(list)) => list.items,
-        None => Vec::new(),
-    };
-    let total = items.len();
-    let values = items
-        .into_iter()
-        .map(|item| {
-            json!({
-                "label": item.label,
-                "kind": item.kind,
-                "detail": item.detail,
-                "documentation": item.documentation,
-                "insert_text": item.insert_text,
-                "text_edit": item.text_edit,
-            })
-        })
-        .collect();
-    (values, total)
-}
-
-fn summarize_code_actions(actions: Vec<CodeActionOrCommand>) -> Vec<Value> {
-    actions
-        .into_iter()
-        .map(|action| match action {
-            CodeActionOrCommand::Command(command) => json!({
-                "title": command.title,
-                "kind": "command",
-                "command": command.command,
-                "arguments": command.arguments,
-            }),
-            CodeActionOrCommand::CodeAction(action) => json!({
-                "title": action.title,
-                "kind": action.kind,
-                "diagnostics": action.diagnostics,
-                "edit": action.edit,
-                "command": action.command,
-            }),
-        })
-        .collect()
-}
-
-fn diagnostic_summary(diagnostics: &[Diagnostic]) -> Value {
-    let mut errors = 0_usize;
-    let mut warnings = 0_usize;
-    let mut info = 0_usize;
-    let mut hints = 0_usize;
-    for diagnostic in diagnostics {
-        match diagnostic.severity {
-            Some(DiagnosticSeverity::ERROR) => errors += 1,
-            Some(DiagnosticSeverity::WARNING) => warnings += 1,
-            Some(DiagnosticSeverity::INFORMATION) => info += 1,
-            Some(DiagnosticSeverity::HINT) => hints += 1,
-            _ => info += 1,
-        }
-    }
-    json!({
-        "total": diagnostics.len(),
-        "errors": errors,
-        "warnings": warnings,
-        "information": info,
-        "hints": hints,
-    })
 }
