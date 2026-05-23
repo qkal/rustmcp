@@ -56,6 +56,10 @@ src/
 
 `server` should expose MCP tools and hold shared state. It should not own the details of LSP result normalization or cargo process cleanup.
 
+The `rmcp` macro routing model is a real constraint. The `#[tool_router]`, `#[tool]`, and `#[tool_handler]` annotated methods should remain attached to `RaMcpServer` as thin wrappers unless the macro supports another layout cleanly. The family modules should provide helper functions and result builders; they do not need to own the macro annotations.
+
+When converting `src/server.rs` into `src/server/mod.rs`, do it as an explicit file-to-directory move. The same applies to `src/cargo.rs` becoming `src/cargo/mod.rs`. Avoid a transient state where both `src/server.rs` and `src/server/mod.rs`, or both `src/cargo.rs` and `src/cargo/mod.rs`, define the same module.
+
 `ra` should own rust-analyzer-backed tool behavior. Adding a navigation or introspection tool should usually require one focused handler and reuse of existing location, snippet, truncation, and result-normalization helpers.
 
 `cargo` should make the safety-critical execution path explicit: structured params become a validated invocation, the process runner executes that invocation with bounded IO and timeout handling, and output shaping prepares the MCP response.
@@ -84,6 +88,10 @@ Navigation and introspection tools should share common result normalization:
 
 This structure should support the README phase-two tools, especially workspace symbols, implementations, call hierarchy, and other navigation/introspection features.
 
+The state/client access pattern should be explicit. Today each `ra_*` handler resolves paths, ensures the rust-analyzer client, and awaits LSP calls while holding the server state mutex. The refactor should centralize that pattern in a small helper so future tools do not each invent their own locking behavior. If the implementation changes lock duration or concurrency semantics, that change should be intentional and tested.
+
+New `ra_*` tools should add typed methods to `lsp::client` instead of embedding raw JSON requests in server routes. The generic LSP request helpers should remain behind the LSP client boundary.
+
 ## `cargo_*` Tool Flow
 
 The cargo tool path should be:
@@ -107,6 +115,10 @@ Cargo responsibilities should be split as follows:
 - `cargo::process`: process spawning, stdin isolation, timeout handling, process-tree cleanup, and bounded output readers.
 - `cargo::output`: truncation helpers, metadata JSON parsing, notes, and response-facing output shaping.
 - `cargo::tools`: orchestration for `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, and `cargo_metadata`.
+
+Keep a narrow cargo façade in `cargo::mod` for the pieces used by the rest of the crate and tests, such as `CargoCommandKind`, `CargoInvocation`, `CargoRunOutput`, and `run_cargo`. Internal helpers should be `pub(crate)` unless tests or callers need them directly.
+
+The cargo run semaphore and the `--disable-cargo-tools` setting are server-level execution policy. The cargo modules can implement the command, process, and output behavior, but server or cargo tool orchestration should remain responsible for enforcing disabled-tool behavior and one-at-a-time cargo execution.
 
 ## Compatibility And Scope
 
@@ -143,6 +155,14 @@ The implementation should be sliced so the project stays green after each major 
 6. Add or adjust tests when moved boundaries expose clearer unit seams.
 
 The highest-risk areas are cargo timeout/process cleanup on Windows and MCP response compatibility. The implementation plan should treat those as regression-sensitive and keep existing integration tests intact until replacements prove equivalent.
+
+Additional regression checks should cover:
+
+- `tools/list` still advertises the expected MVP tool names after wrapper extraction.
+- `--disable-cargo-tools` still lists cargo tools but returns structured disabled failures.
+- `cargo_metadata` still avoids duplicating parsed metadata JSON in raw `stdout`.
+- Cargo timeout tests still prove inherited output pipes and descendant cleanup do not hang on Windows.
+- At least one `ra_*` smoke test still exercises rust-analyzer through the MCP server, not only through helper units.
 
 ## Non-Goals
 
