@@ -25,8 +25,6 @@ pub(crate) fn summarize_code_actions(actions: Vec<CodeActionOrCommand>) -> Vec<V
         .collect()
 }
 
-// Temporarily unused until the next slices wire it into the ra_rename_preview tool.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct WorkspaceEditSummary {
     pub document_count: usize,
@@ -34,8 +32,6 @@ pub(crate) struct WorkspaceEditSummary {
     pub resource_operation_count: usize,
 }
 
-// Temporarily unused until the next slices wire it into the ra_rename_preview tool.
-#[allow(dead_code)]
 pub(crate) fn summarize_workspace_edit(edit: &WorkspaceEdit) -> WorkspaceEditSummary {
     let mut document_count = 0_usize;
     let mut change_count = 0_usize;

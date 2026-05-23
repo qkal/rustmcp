@@ -90,8 +90,6 @@ pub struct WorkspaceDiagnosticsParams {
     pub max_diagnostics: Option<u32>,
 }
 
-// Temporarily unused until the next slices wire it into the ra_rename_preview tool.
-#[allow(dead_code)]
 pub(crate) fn validate_rename_name(new_name: &str) -> Result<(), &'static str> {
     let trimmed = new_name.trim();
     if trimmed.is_empty() {
