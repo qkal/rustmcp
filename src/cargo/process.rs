@@ -48,50 +48,50 @@ pub async fn run_cargo(
 
     let mut notes = Vec::new();
     let timeout = Duration::from_millis(invocation.timeout_ms);
-    let (status, mut timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(Ok(status)) => (
-            CargoStatus {
-                code: status.code(),
-                success: status.success(),
-            },
-            false,
-        ),
-        Ok(Err(error)) => return Err(RaMcpError::CargoExecution(error.to_string())),
-        Err(_) => {
-            notes.push(format!(
-                "cargo timed out after {} ms",
-                invocation.timeout_ms
-            ));
-            cleanup_process_tree(child_pid, &mut child, &mut notes).await;
-            (
-                CargoStatus {
-                    code: None,
-                    success: false,
-                },
-                true,
-            )
-        }
-    };
-
-    let (stdout, stderr) = if timed_out {
-        stdout_task.abort();
-        stderr_task.abort();
-        notes.push("cargo output collection stopped after timeout".to_string());
-        truncated_output_pair()
-    } else {
-        let remaining_timeout = timeout
-            .saturating_sub(started.elapsed())
-            .max(Duration::from_millis(100));
-        match collect_task_outputs(stdout_task, stderr_task, remaining_timeout).await? {
-            OutputCollection::Complete(stdout, stderr) => (stdout, stderr),
-            OutputCollection::TimedOut => {
-                timed_out = true;
-                notes.push("cargo output collection stopped after timeout".to_string());
-                cleanup_process_tree(child_pid, &mut child, &mut notes).await;
-                truncated_output_pair()
+    let (status, stdout, stderr, timed_out) =
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) => {
+                let status = CargoStatus {
+                    code: status.code(),
+                    success: status.success(),
+                };
+                let remaining_timeout = timeout
+                    .saturating_sub(started.elapsed())
+                    .max(Duration::from_millis(100));
+                match collect_task_outputs(stdout_task, stderr_task, remaining_timeout).await? {
+                    OutputCollection::Complete(stdout, stderr) => (status, stdout, stderr, false),
+                    OutputCollection::TimedOut => {
+                        notes.push("cargo output collection stopped after timeout".to_string());
+                        cleanup_process_tree(child_pid, &mut child, &mut notes).await;
+                        let (stdout, stderr) = truncated_output_pair();
+                        (status, stdout, stderr, true)
+                    }
+                }
             }
-        }
-    };
+            Ok(Err(error)) => {
+                abort_reader_tasks(stdout_task, stderr_task).await;
+                return Err(RaMcpError::CargoExecution(error.to_string()));
+            }
+            Err(_) => {
+                notes.push(format!(
+                    "cargo timed out after {} ms",
+                    invocation.timeout_ms
+                ));
+                cleanup_process_tree(child_pid, &mut child, &mut notes).await;
+                abort_reader_tasks(stdout_task, stderr_task).await;
+                notes.push("cargo output collection stopped after timeout".to_string());
+                let (stdout, stderr) = truncated_output_pair();
+                (
+                    CargoStatus {
+                        code: None,
+                        success: false,
+                    },
+                    stdout,
+                    stderr,
+                    true,
+                )
+            }
+        };
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let metadata_json = metadata_json(&invocation, &status, &stdout, &mut notes);
 
@@ -120,20 +120,76 @@ async fn collect_task_outputs(
     mut stderr_task: JoinHandle<std::io::Result<TruncatedText>>,
     timeout: Duration,
 ) -> CrateResult<OutputCollection> {
-    match tokio::time::timeout(timeout, async {
-        let stdout = task_output(&mut stdout_task, "stdout").await?;
-        let stderr = task_output(&mut stderr_task, "stderr").await?;
-        Ok::<_, RaMcpError>((stdout, stderr))
-    })
-    .await
-    {
-        Ok(output) => output.map(|(stdout, stderr)| OutputCollection::Complete(stdout, stderr)),
-        Err(_) => {
-            stdout_task.abort();
-            stderr_task.abort();
-            Ok(OutputCollection::TimedOut)
+    let timeout = tokio::time::sleep(timeout);
+    tokio::pin!(timeout);
+
+    let mut stdout = None;
+    let mut stderr = None;
+
+    loop {
+        tokio::select! {
+            _ = &mut timeout => {
+                if stdout.is_none() {
+                    abort_reader_task(&mut stdout_task).await;
+                }
+                if stderr.is_none() {
+                    abort_reader_task(&mut stderr_task).await;
+                }
+                return Ok(OutputCollection::TimedOut);
+            }
+            output = &mut stdout_task, if stdout.is_none() => {
+                match reader_output(output, "stdout") {
+                    Ok(output) => stdout = Some(output),
+                    Err(error) => {
+                        if stderr.is_none() {
+                            abort_reader_task(&mut stderr_task).await;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            output = &mut stderr_task, if stderr.is_none() => {
+                match reader_output(output, "stderr") {
+                    Ok(output) => stderr = Some(output),
+                    Err(error) => {
+                        if stdout.is_none() {
+                            abort_reader_task(&mut stdout_task).await;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        match (stdout.take(), stderr.take()) {
+            (Some(stdout), Some(stderr)) => {
+                return Ok(OutputCollection::Complete(stdout, stderr));
+            }
+            (stdout_output, stderr_output) => {
+                stdout = stdout_output;
+                stderr = stderr_output;
+            }
         }
     }
+}
+
+async fn abort_reader_tasks(
+    stdout_task: JoinHandle<std::io::Result<TruncatedText>>,
+    stderr_task: JoinHandle<std::io::Result<TruncatedText>>,
+) {
+    let _ = tokio::join!(
+        abort_reader_task_owned(stdout_task),
+        abort_reader_task_owned(stderr_task)
+    );
+}
+
+async fn abort_reader_task_owned(mut task: JoinHandle<std::io::Result<TruncatedText>>) {
+    abort_reader_task(&mut task).await;
+}
+
+async fn abort_reader_task(task: &mut JoinHandle<std::io::Result<TruncatedText>>) {
+    task.abort();
+    let _ = task.await;
 }
 
 fn truncated_output_pair() -> (TruncatedText, TruncatedText) {
@@ -270,11 +326,11 @@ async fn reap_child_after_cleanup(child: &mut tokio::process::Child, notes: &mut
     }
 }
 
-async fn task_output(
-    task: &mut JoinHandle<std::io::Result<TruncatedText>>,
+fn reader_output(
+    output: std::result::Result<std::io::Result<TruncatedText>, tokio::task::JoinError>,
     stream_name: &str,
 ) -> CrateResult<TruncatedText> {
-    task.await
+    output
         .map_err(|error| {
             RaMcpError::CargoExecution(format!(
                 "failed to join cargo {stream_name} reader: {error}"
