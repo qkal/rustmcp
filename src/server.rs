@@ -1,4 +1,5 @@
 pub mod response;
+pub(crate) mod state;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -7,7 +8,11 @@ use rmcp::{ServerHandler, handler::server::wrapper::Parameters, tool, tool_handl
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore};
 
-use self::response::{failure, success};
+pub use self::state::ServerConfig;
+use self::{
+    response::{failure, success},
+    state::{ServerState, hint_for_error},
+};
 
 use crate::cargo::params::{
     CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams,
@@ -27,34 +32,13 @@ use crate::ra::{
     navigation::{definition_locations, references_truncated},
     symbols::document_symbols_result,
 };
-use crate::{
-    cargo::CargoCommandKind, error::RaMcpError, lsp::client::RustAnalyzerClient,
-    workspace::Workspace,
-};
+use crate::{cargo::CargoCommandKind, lsp::client::RustAnalyzerClient, workspace::Workspace};
 
 #[derive(Clone)]
 pub struct RaMcpServer {
     state: Arc<Mutex<ServerState>>,
     config: ServerConfig,
     cargo_run_lock: Arc<Semaphore>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ServerConfig {
-    pub cargo_tools_enabled: bool,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            cargo_tools_enabled: true,
-        }
-    }
-}
-
-struct ServerState {
-    workspace: Workspace,
-    client: Option<RustAnalyzerClient>,
 }
 
 impl RaMcpServer {
@@ -73,55 +57,9 @@ impl RaMcpServer {
         })
     }
 
-    async fn ensure_client(
-        state: &mut ServerState,
-    ) -> crate::error::Result<&mut RustAnalyzerClient> {
-        if state.client.is_none() {
-            state.client = Some(RustAnalyzerClient::spawn(state.workspace.clone()).await?);
-        }
-        state.client.as_mut().ok_or(RaMcpError::AnalyzerNotRunning)
-    }
-
-    fn workspace_root(state: &ServerState) -> String {
-        state.workspace.root().display().to_string()
-    }
-
-    fn workspace_notes(workspace: &Workspace) -> Vec<String> {
-        let mut notes = Vec::new();
-        if workspace.warnings().missing_cargo_toml {
-            notes.push("Workspace root does not contain Cargo.toml.".to_string());
-        }
-        notes
-    }
-
-    fn hint_for_error(error: &RaMcpError) -> &'static str {
-        match error {
-            RaMcpError::OutsideWorkspace => {
-                "Pass a path relative to the configured Rust workspace."
-            }
-            RaMcpError::RustAnalyzerMissing => {
-                "Install rust-analyzer, for example: rustup component add rust-analyzer."
-            }
-            RaMcpError::FileMissing(_) | RaMcpError::NotAFile(_) => {
-                "Pass an existing Rust source file inside the workspace root."
-            }
-            RaMcpError::CargoMissing => "Install cargo and make sure it is available on PATH.",
-            RaMcpError::CargoValidation(_) => {
-                "Check the cargo tool parameters; only fixed supported cargo flags are accepted."
-            }
-            RaMcpError::CargoExecution(_) => {
-                "Check cargo output, workspace configuration, and whether another process is locking build artifacts."
-            }
-            _ => "Check the workspace path, rust-analyzer installation, and input parameters.",
-        }
-    }
-
     async fn cargo_workspace_root(&self) -> (PathBuf, String) {
         let state = self.state.lock().await;
-        (
-            state.workspace.root().to_path_buf(),
-            Self::workspace_root(&state),
-        )
+        (state.workspace.root().to_path_buf(), state.workspace_root())
     }
 }
 
@@ -133,7 +71,7 @@ impl RaMcpServer {
     )]
     async fn ra_set_workspace(&self, Parameters(params): Parameters<SetWorkspaceParams>) -> String {
         let mut state = self.state.lock().await;
-        let old_root = Self::workspace_root(&state);
+        let old_root = state.workspace_root();
         let new_workspace = match Workspace::new(&params.workspace_path) {
             Ok(workspace) => workspace,
             Err(error) => {
@@ -142,7 +80,7 @@ impl RaMcpServer {
                     old_root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -152,7 +90,7 @@ impl RaMcpServer {
         }
 
         state.workspace = new_workspace;
-        let mut notes = Self::workspace_notes(&state.workspace);
+        let mut notes = state.workspace_notes();
         let restart = match RustAnalyzerClient::spawn(state.workspace.clone()).await {
             Ok(client) => {
                 state.client = Some(client);
@@ -166,10 +104,10 @@ impl RaMcpServer {
 
         success(
             "ra_set_workspace",
-            Self::workspace_root(&state),
+            state.workspace_root(),
             &params,
             json!({
-                "workspace_root": Self::workspace_root(&state),
+                "workspace_root": state.workspace_root(),
                 "rust_analyzer_restarted": restart,
                 "warnings": state.workspace.warnings(),
             }),
@@ -184,7 +122,7 @@ impl RaMcpServer {
     )]
     async fn ra_hover(&self, Parameters(params): Parameters<HoverParams>) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -193,12 +131,12 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
         let workspace = state.workspace.clone();
-        let client = match Self::ensure_client(&mut state).await {
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -206,7 +144,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -218,7 +156,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -226,7 +164,7 @@ impl RaMcpServer {
             .uri_for_file(&file)
             .map(|uri| uri.to_string())
             .unwrap_or_default();
-        let mut notes = Self::workspace_notes(&workspace);
+        let mut notes = state.workspace_notes();
         if hover.is_none() {
             notes.push("No hover returned. rust-analyzer may still be indexing or the position has no symbol.".to_string());
         }
@@ -251,7 +189,7 @@ impl RaMcpServer {
     )]
     async fn ra_definition(&self, Parameters(params): Parameters<DefinitionParams>) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -260,12 +198,12 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
         let workspace = state.workspace.clone();
-        let client = match Self::ensure_client(&mut state).await {
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -273,7 +211,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -288,7 +226,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -296,7 +234,7 @@ impl RaMcpServer {
             .context_lines
             .unwrap_or(DEFAULT_DEFINITION_CONTEXT_LINES);
         let include_snippets = params.include_snippets.unwrap_or(true);
-        let mut notes = Self::workspace_notes(&workspace);
+        let mut notes = state.workspace_notes();
         let locations = definition_locations(response)
             .into_iter()
             .map(|(uri, range)| locate(&workspace, uri, range, context_lines, include_snippets))
@@ -318,7 +256,7 @@ impl RaMcpServer {
     #[tool(name = "ra_references", description = "Find references at a position.")]
     async fn ra_references(&self, Parameters(params): Parameters<ReferencesParams>) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -327,12 +265,12 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
         let workspace = state.workspace.clone();
-        let client = match Self::ensure_client(&mut state).await {
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -340,7 +278,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -360,7 +298,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -393,7 +331,7 @@ impl RaMcpServer {
                 "references": located,
                 "max_results": max_results,
             }),
-            Self::workspace_notes(&workspace),
+            state.workspace_notes(),
             truncated,
         )
     }
@@ -407,7 +345,7 @@ impl RaMcpServer {
         Parameters(params): Parameters<DocumentSymbolsParams>,
     ) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -416,12 +354,12 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
-        let notes = Self::workspace_notes(&state.workspace);
-        let client = match Self::ensure_client(&mut state).await {
+        let notes = state.workspace_notes();
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -429,7 +367,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -441,7 +379,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -461,7 +399,7 @@ impl RaMcpServer {
     )]
     async fn ra_completion(&self, Parameters(params): Parameters<CompletionParams>) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -470,12 +408,12 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
-        let notes = Self::workspace_notes(&state.workspace);
-        let client = match Self::ensure_client(&mut state).await {
+        let notes = state.workspace_notes();
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -483,7 +421,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -498,7 +436,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -525,7 +463,7 @@ impl RaMcpServer {
     )]
     async fn ra_format(&self, Parameters(params): Parameters<FormatParams>) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -534,14 +472,14 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
-        let mut notes = Self::workspace_notes(&state.workspace);
+        let mut notes = state.workspace_notes();
         notes
             .push("This tool returns formatting edits only; it does not mutate files.".to_string());
-        let client = match Self::ensure_client(&mut state).await {
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -549,7 +487,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -561,7 +499,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -581,7 +519,7 @@ impl RaMcpServer {
     )]
     async fn ra_code_actions(&self, Parameters(params): Parameters<CodeActionsParams>) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -590,15 +528,15 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
-        let mut notes = Self::workspace_notes(&state.workspace);
+        let mut notes = state.workspace_notes();
         notes.push(
             "This tool returns code actions only; it does not apply edits or commands.".to_string(),
         );
-        let client = match Self::ensure_client(&mut state).await {
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -606,7 +544,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -627,7 +565,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -647,7 +585,7 @@ impl RaMcpServer {
     )]
     async fn ra_diagnostics(&self, Parameters(params): Parameters<DiagnosticsParams>) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let file = match state.workspace.resolve_existing_file(&params.file_path) {
             Ok(file) => file,
             Err(error) => {
@@ -656,12 +594,11 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
-        let workspace = state.workspace.clone();
-        let client = match Self::ensure_client(&mut state).await {
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -669,7 +606,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -681,7 +618,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
@@ -690,7 +627,7 @@ impl RaMcpServer {
         ))
         .await;
         let diagnostics = client.diagnostics_for(&uri).await;
-        let mut notes = Self::workspace_notes(&workspace);
+        let mut notes = state.workspace_notes();
         if diagnostics.is_empty() {
             notes.push("No diagnostics are currently cached for this file; rust-analyzer may still be indexing or the file has no diagnostics.".to_string());
         }
@@ -717,11 +654,11 @@ impl RaMcpServer {
         Parameters(params): Parameters<WorkspaceDiagnosticsParams>,
     ) -> String {
         let mut state = self.state.lock().await;
-        let root = Self::workspace_root(&state);
+        let root = state.workspace_root();
         let max_files = params.max_files.unwrap_or(DEFAULT_MAX_FILES) as usize;
         let max_diagnostics = params.max_diagnostics.unwrap_or(DEFAULT_MAX_DIAGNOSTICS) as usize;
-        let notes = Self::workspace_notes(&state.workspace);
-        let client = match Self::ensure_client(&mut state).await {
+        let notes = state.workspace_notes();
+        let client = match state.ensure_client().await {
             Ok(client) => client,
             Err(error) => {
                 return failure(
@@ -729,7 +666,7 @@ impl RaMcpServer {
                     root,
                     &params,
                     error.to_string(),
-                    Self::hint_for_error(&error),
+                    hint_for_error(&error),
                 );
             }
         };
