@@ -13,9 +13,10 @@ use lsp_types::{
     CodeActionContext, CodeActionParams, CodeActionResponse, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, Location, PartialResultParams, Position,
-    PublishDiagnosticsParams, Range, ReferenceContext, ReferenceParams, RenameParams,
-    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, Location,
+    PartialResultParams, Position, PublishDiagnosticsParams, Range, ReferenceContext,
+    ReferenceParams, RenameParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+    TextDocumentItem,
     TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
     WorkspaceEdit,
 };
@@ -184,6 +185,18 @@ impl RustAnalyzerClient {
         };
         self.request_optional("textDocument/completion", params)
             .await
+    }
+
+    pub async fn inlay_hints(&mut self, file: &Path, range: Range) -> Result<Vec<InlayHint>> {
+        let uri = self.open_document(file).await?;
+        let params = InlayHintParams {
+            text_document: TextDocumentIdentifier::new(uri),
+            range,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.request_optional("textDocument/inlayHint", params)
+            .await
+            .map(Option::unwrap_or_default)
     }
 
     pub async fn formatting(&mut self, file: &Path) -> Result<Vec<lsp_types::TextEdit>> {

@@ -138,6 +138,58 @@ async fn rust_analyzer_smoke_rename_when_available() {
 }
 
 #[tokio::test]
+async fn rust_analyzer_smoke_inlay_hints_request_when_available() {
+    if which::which("rust-analyzer").is_err() {
+        eprintln!("skipping: rust-analyzer not found on PATH");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"ra_mcp_inlay_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 {\n    let value = 42;\n    value\n}\n",
+    )
+    .unwrap();
+
+    let workspace = Workspace::new(temp.path()).unwrap();
+    let mut client = RustAnalyzerClient::spawn(workspace.clone()).await.unwrap();
+    let file = workspace.resolve_existing_file("src/lib.rs").unwrap();
+    let mut request_succeeded = false;
+    for _ in 0..20 {
+        match client
+            .inlay_hints(
+                &file,
+                lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    lsp_types::Position::new(4, 0),
+                ),
+            )
+            .await
+        {
+            Ok(_) => {
+                request_succeeded = true;
+                break;
+            }
+            Err(error) if error.to_string().contains("content modified") => {}
+            Err(error) => panic!("inlay hints failed: {error}"),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    client.shutdown().await.unwrap();
+
+    assert!(
+        request_succeeded,
+        "expected rust-analyzer inlay hint request to succeed"
+    );
+}
+
+#[tokio::test]
 async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
     let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
     let temp = tempfile::tempdir().unwrap();
