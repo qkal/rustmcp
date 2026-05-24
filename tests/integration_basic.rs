@@ -232,6 +232,7 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
         "ra_references",
         "ra_document_symbols",
         "ra_completion",
+        "ra_inlay_hints",
         "ra_format",
         "ra_code_actions",
         "ra_rename_preview",
@@ -428,6 +429,73 @@ async fn mcp_rename_preview_rejects_whitespace_name() {
             .as_str()
             .unwrap()
             .contains("whitespace-only")
+    );
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn ra_inlay_hints_rejects_unknown_kind_before_rust_analyzer_request() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"inlay_validation_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "ra_inlay_hints",
+                "arguments": {
+                    "file_path": "src/lib.rs",
+                    "kinds": ["bogus"]
+                }
+            }
+        }),
+    )
+    .await;
+    let response = read_mcp_line(&mut stdout).await;
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["tool"], "ra_inlay_hints");
+    assert!(
+        payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown inlay hint kind")
+    );
+    assert!(
+        payload["hint"]
+            .as_str()
+            .unwrap()
+            .contains("type, parameter, or other")
     );
 
     child.kill().await.unwrap();

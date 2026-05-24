@@ -15,8 +15,6 @@ pub(crate) enum InlayHintKindFilter {
     Other,
 }
 
-// Wired by the upcoming ra_inlay_hints server task.
-#[allow(dead_code)]
 pub(crate) fn max_hints_value(value: Option<u32>) -> ValidationResult<usize> {
     let value = value.unwrap_or(DEFAULT_MAX_INLAY_HINTS);
     if !(1..=MAX_INLAY_HINTS).contains(&value) {
@@ -28,8 +26,6 @@ pub(crate) fn max_hints_value(value: Option<u32>) -> ValidationResult<usize> {
     Ok(value as usize)
 }
 
-// Wired by the upcoming ra_inlay_hints server task.
-#[allow(dead_code)]
 pub(crate) fn request_range(
     source_lines: &[String],
     start_line: Option<u32>,
@@ -66,8 +62,6 @@ pub(crate) fn request_range(
     }
 }
 
-// Wired by the upcoming ra_inlay_hints server task.
-#[allow(dead_code)]
 pub(crate) fn parse_kind_filters(
     kinds: Option<&[String]>,
 ) -> ValidationResult<Option<BTreeSet<InlayHintKindFilter>>> {
@@ -100,8 +94,6 @@ fn kind_filter_for(kind: Option<InlayHintKind>) -> InlayHintKindFilter {
     }
 }
 
-// Wired by the upcoming ra_inlay_hints server task.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct FormattedInlayHints {
     pub result: Value,
@@ -125,15 +117,11 @@ struct InlayHintGroup {
     hints: Vec<InlayHintSummary>,
 }
 
-// Wired by the upcoming ra_inlay_hints server task.
-#[allow(dead_code)]
 pub(crate) fn read_source_lines(path: &Path) -> crate::error::Result<Vec<String>> {
     let text = fs::read_to_string(path)?;
     Ok(text.lines().map(str::to_string).collect())
 }
 
-// Wired by the upcoming ra_inlay_hints server task.
-#[allow(dead_code)]
 pub(crate) fn format_inlay_hints(
     file_path: &str,
     range: Value,
