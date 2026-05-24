@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_DEFINITION_CONTEXT_LINES: u32 = 8;
 pub const DEFAULT_REFERENCE_CONTEXT_LINES: u32 = 4;
 pub const DEFAULT_MAX_RESULTS: u32 = 50;
+pub const DEFAULT_MAX_INLAY_HINTS: u32 = 200;
+pub const MAX_INLAY_HINTS: u32 = 1_000;
 pub const DEFAULT_DIAGNOSTICS_WAIT_MS: u64 = 1_500;
 pub const DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS: u64 = 3_000;
 pub const DEFAULT_MAX_FILES: u32 = 100;
@@ -56,6 +58,16 @@ pub struct CompletionParams {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
+pub struct InlayHintsParams {
+    pub file_path: String,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+    pub kinds: Option<Vec<String>>,
+    pub max_hints: Option<u32>,
+    pub include_raw: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
 pub struct FormatParams {
     pub file_path: String,
 }
@@ -105,7 +117,10 @@ pub(crate) fn validate_rename_name(new_name: &str) -> Result<(), &'static str> {
 mod tests {
     use serde_json::json;
 
-    use super::{DEFAULT_MAX_RESULTS, HoverParams, RenamePreviewParams, validate_rename_name};
+    use super::{
+        DEFAULT_MAX_INLAY_HINTS, DEFAULT_MAX_RESULTS, HoverParams, InlayHintsParams,
+        RenamePreviewParams, validate_rename_name,
+    };
 
     #[test]
     fn hover_params_schema_is_generated() {
@@ -141,5 +156,17 @@ mod tests {
             "new_name must not start with '-'"
         );
         assert!(validate_rename_name("renamed_answer").is_ok());
+    }
+
+    #[test]
+    fn inlay_hints_params_schema_is_generated() {
+        let schema = schemars::schema_for!(InlayHintsParams);
+        let schema_json = serde_json::to_value(schema).unwrap();
+        assert_eq!(schema_json["title"], "InlayHintsParams");
+    }
+
+    #[test]
+    fn default_max_inlay_hints_remains_two_hundred() {
+        assert_eq!(json!(DEFAULT_MAX_INLAY_HINTS), json!(200));
     }
 }
