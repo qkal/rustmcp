@@ -1,12 +1,11 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fs, path::Path};
 
-use lsp_types::{InlayHintKind, Position, Range};
+use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::ra::params::{DEFAULT_MAX_INLAY_HINTS, MAX_INLAY_HINTS};
 
-// Wired by the upcoming ra_inlay_hints server and formatting tasks.
-#[allow(dead_code)]
 type ValidationResult<T> = std::result::Result<T, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -93,13 +92,161 @@ pub(crate) fn parse_kind_filters(
     Ok(Some(filters))
 }
 
-// Wired by the upcoming ra_inlay_hints formatting task.
+// Wired by the upcoming ra_inlay_hints server task through formatting.
 #[allow(dead_code)]
 fn kind_filter_for(kind: Option<InlayHintKind>) -> InlayHintKindFilter {
     match kind {
         Some(kind) if kind == InlayHintKind::TYPE => InlayHintKindFilter::Type,
         Some(kind) if kind == InlayHintKind::PARAMETER => InlayHintKindFilter::Parameter,
         _ => InlayHintKindFilter::Other,
+    }
+}
+
+// Wired by the upcoming ra_inlay_hints server task.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct FormattedInlayHints {
+    pub result: Value,
+    pub notes: Vec<String>,
+    pub truncated: bool,
+}
+
+// Wired by the upcoming ra_inlay_hints server task through formatting.
+#[allow(dead_code)]
+#[derive(Debug, Serialize)]
+struct InlayHintSummary {
+    character: u32,
+    label: String,
+    kind: &'static str,
+    padding_left: bool,
+    padding_right: bool,
+}
+
+// Wired by the upcoming ra_inlay_hints server task through formatting.
+#[allow(dead_code)]
+#[derive(Debug, Serialize)]
+struct InlayHintGroup {
+    line: u32,
+    text: String,
+    hints: Vec<InlayHintSummary>,
+}
+
+// Wired by the upcoming ra_inlay_hints server task.
+#[allow(dead_code)]
+pub(crate) fn read_source_lines(path: &Path) -> crate::error::Result<Vec<String>> {
+    let text = fs::read_to_string(path)?;
+    Ok(text.lines().map(str::to_string).collect())
+}
+
+// Wired by the upcoming ra_inlay_hints server task.
+#[allow(dead_code)]
+pub(crate) fn format_inlay_hints(
+    file_path: &str,
+    range: Value,
+    source_lines: &[String],
+    hints: Vec<InlayHint>,
+    filters: Option<&BTreeSet<InlayHintKindFilter>>,
+    max_hints: usize,
+    include_raw: bool,
+) -> ValidationResult<FormattedInlayHints> {
+    let mut filtered = hints
+        .into_iter()
+        .filter(|hint| {
+            filters
+                .map(|filters| filters.contains(&kind_filter_for(hint.kind)))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    filtered.sort_by_key(|hint| (hint.position.line, hint.position.character));
+
+    let total = filtered.len();
+    let truncated = total > max_hints;
+    let selected = filtered.into_iter().take(max_hints).collect::<Vec<_>>();
+
+    let mut groups = Vec::<InlayHintGroup>::new();
+    for hint in &selected {
+        let summary = InlayHintSummary {
+            character: hint.position.character,
+            label: label_text(&hint.label),
+            kind: kind_name(hint.kind),
+            padding_left: hint.padding_left.unwrap_or(false),
+            padding_right: hint.padding_right.unwrap_or(false),
+        };
+
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.line == hint.position.line)
+        {
+            group.hints.push(summary);
+        } else {
+            groups.push(InlayHintGroup {
+                line: hint.position.line,
+                text: source_lines
+                    .get(hint.position.line as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+                hints: vec![summary],
+            });
+        }
+    }
+
+    let mut notes = Vec::new();
+    if total == 0 {
+        notes.push(
+            "No inlay hints returned. rust-analyzer may still be indexing, or the selected range has no hints."
+                .to_string(),
+        );
+    }
+    if truncated {
+        notes.push(format!(
+            "Returned {max_hints} of {total} inlay hints; use a narrower range or higher max_hints up to {MAX_INLAY_HINTS}."
+        ));
+    }
+
+    let mut result = json!({
+        "file_path": file_path,
+        "range": range,
+        "total": total,
+        "returned": selected.len(),
+        "groups": groups,
+    });
+    if include_raw {
+        let raw_hints = serde_json::to_value(&selected).map_err(|error| error.to_string())?;
+        result
+            .as_object_mut()
+            .expect("inlay hints result is a JSON object")
+            .insert("raw_hints".to_string(), raw_hints);
+    }
+
+    Ok(FormattedInlayHints {
+        result,
+        notes,
+        truncated,
+    })
+}
+
+// Wired by the upcoming ra_inlay_hints server task through formatting.
+#[allow(dead_code)]
+fn label_text(label: &InlayHintLabel) -> String {
+    match label {
+        InlayHintLabel::String(value) => value.clone(),
+        InlayHintLabel::LabelParts(parts) => {
+            let mut label = String::new();
+            for part in parts {
+                label.push_str(&part.value);
+            }
+            label
+        }
+    }
+}
+
+// Wired by the upcoming ra_inlay_hints server task through formatting.
+#[allow(dead_code)]
+fn kind_name(kind: Option<InlayHintKind>) -> &'static str {
+    match kind_filter_for(kind) {
+        InlayHintKindFilter::Type => "type",
+        InlayHintKindFilter::Parameter => "parameter",
+        InlayHintKindFilter::Other => "other",
     }
 }
 
@@ -191,5 +338,169 @@ mod tests {
             parse_kind_filters(Some(&["bogus".to_string()])).unwrap_err(),
             "unknown inlay hint kind 'bogus'; expected type, parameter, or other"
         );
+    }
+
+    fn hint(
+        line: u32,
+        character: u32,
+        label: InlayHintLabel,
+        kind: Option<InlayHintKind>,
+    ) -> InlayHint {
+        InlayHint {
+            position: Position::new(line, character),
+            label,
+            kind,
+            text_edits: None,
+            tooltip: None,
+            padding_left: Some(false),
+            padding_right: Some(true),
+            data: None,
+        }
+    }
+
+    #[test]
+    fn labels_are_rendered_from_strings_and_label_parts() {
+        let string_label = label_text(&InlayHintLabel::String(": i32".to_string()));
+        let parts_label = label_text(&InlayHintLabel::LabelParts(vec![
+            lsp_types::InlayHintLabelPart {
+                value: ": ".to_string(),
+                ..Default::default()
+            },
+            lsp_types::InlayHintLabelPart {
+                value: "Client".to_string(),
+                ..Default::default()
+            },
+        ]));
+
+        assert_eq!(string_label, ": i32");
+        assert_eq!(parts_label, ": Client");
+    }
+
+    #[test]
+    fn result_groups_hints_by_line_and_sorts_by_position() {
+        let source_lines = vec![
+            "fn main() {".to_string(),
+            "    let value = 42;".to_string(),
+            "}".to_string(),
+        ];
+        let formatted = format_inlay_hints(
+            "src/lib.rs",
+            json!({"start_line": 0, "end_line": 2}),
+            &source_lines,
+            vec![
+                hint(
+                    1,
+                    12,
+                    InlayHintLabel::String(": i32".to_string()),
+                    Some(InlayHintKind::TYPE),
+                ),
+                hint(
+                    1,
+                    8,
+                    InlayHintLabel::String("value: ".to_string()),
+                    Some(InlayHintKind::PARAMETER),
+                ),
+            ],
+            None,
+            10,
+            false,
+        )
+        .unwrap();
+
+        assert!(!formatted.truncated);
+        assert!(formatted.notes.is_empty());
+        assert_eq!(formatted.result["file_path"], "src/lib.rs");
+        assert_eq!(formatted.result["total"], 2);
+        assert_eq!(formatted.result["returned"], 2);
+        assert_eq!(formatted.result["groups"][0]["line"], 1);
+        assert_eq!(formatted.result["groups"][0]["text"], "    let value = 42;");
+        assert_eq!(formatted.result["groups"][0]["hints"][0]["character"], 8);
+        assert_eq!(
+            formatted.result["groups"][0]["hints"][0]["kind"],
+            "parameter"
+        );
+        assert_eq!(formatted.result["groups"][0]["hints"][1]["character"], 12);
+        assert_eq!(formatted.result["groups"][0]["hints"][1]["kind"], "type");
+    }
+
+    #[test]
+    fn kind_filters_and_truncation_are_applied_before_grouping() {
+        let source_lines = vec!["let value = 42;".to_string()];
+        let filters = parse_kind_filters(Some(&["type".to_string()])).unwrap();
+        let formatted = format_inlay_hints(
+            "src/lib.rs",
+            json!({"start_line": 0, "end_line": 0}),
+            &source_lines,
+            vec![
+                hint(
+                    0,
+                    4,
+                    InlayHintLabel::String("value: ".to_string()),
+                    Some(InlayHintKind::PARAMETER),
+                ),
+                hint(
+                    0,
+                    9,
+                    InlayHintLabel::String(": i32".to_string()),
+                    Some(InlayHintKind::TYPE),
+                ),
+                hint(
+                    0,
+                    12,
+                    InlayHintLabel::String(": u32".to_string()),
+                    Some(InlayHintKind::TYPE),
+                ),
+            ],
+            filters.as_ref(),
+            1,
+            false,
+        )
+        .unwrap();
+
+        assert!(formatted.truncated);
+        assert_eq!(formatted.result["total"], 2);
+        assert_eq!(formatted.result["returned"], 1);
+        assert_eq!(formatted.result["groups"][0]["hints"][0]["label"], ": i32");
+        assert!(
+            formatted
+                .notes
+                .iter()
+                .any(|note| note.contains("narrower range or higher max_hints"))
+        );
+    }
+
+    #[test]
+    fn raw_hints_are_included_only_when_requested() {
+        let source_lines = vec!["let value = 42;".to_string()];
+        let hints = vec![hint(
+            0,
+            9,
+            InlayHintLabel::String(": i32".to_string()),
+            Some(InlayHintKind::TYPE),
+        )];
+
+        let without_raw = format_inlay_hints(
+            "src/lib.rs",
+            json!({"start_line": 0, "end_line": 0}),
+            &source_lines,
+            hints.clone(),
+            None,
+            10,
+            false,
+        )
+        .unwrap();
+        let with_raw = format_inlay_hints(
+            "src/lib.rs",
+            json!({"start_line": 0, "end_line": 0}),
+            &source_lines,
+            hints,
+            None,
+            10,
+            true,
+        )
+        .unwrap();
+
+        assert!(without_raw.result.get("raw_hints").is_none());
+        assert!(with_raw.result["raw_hints"].is_array());
     }
 }
