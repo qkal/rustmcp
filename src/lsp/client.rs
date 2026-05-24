@@ -16,9 +16,8 @@ use lsp_types::{
     GotoDefinitionResponse, Hover, HoverParams, InlayHint, InlayHintParams, Location,
     PartialResultParams, Position, PublishDiagnosticsParams, Range, ReferenceContext,
     ReferenceParams, RenameParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem,
-    TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier, WorkDoneProgressParams,
-    WorkspaceEdit,
+    TextDocumentItem, TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
+    WorkDoneProgressParams, WorkspaceEdit,
 };
 use serde_json::{Value, json};
 use tokio::{
