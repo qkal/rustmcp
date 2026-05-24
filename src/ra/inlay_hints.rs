@@ -68,6 +68,9 @@ pub(crate) fn parse_kind_filters(
     let Some(kinds) = kinds else {
         return Ok(None);
     };
+    if kinds.is_empty() {
+        return Ok(None);
+    }
 
     let mut filters = BTreeSet::new();
     for kind in kinds {
@@ -312,6 +315,7 @@ mod tests {
         assert!(filters.contains(&InlayHintKindFilter::Parameter));
         assert!(filters.contains(&InlayHintKindFilter::Other));
         assert!(parse_kind_filters(None).unwrap().is_none());
+        assert!(parse_kind_filters(Some(&[])).unwrap().is_none());
         assert_eq!(
             parse_kind_filters(Some(&["bogus".to_string()])).unwrap_err(),
             "unknown inlay hint kind 'bogus'; expected type, parameter, or other"
