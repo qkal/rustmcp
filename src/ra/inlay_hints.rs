@@ -92,8 +92,6 @@ pub(crate) fn parse_kind_filters(
     Ok(Some(filters))
 }
 
-// Wired by the upcoming ra_inlay_hints server task through formatting.
-#[allow(dead_code)]
 fn kind_filter_for(kind: Option<InlayHintKind>) -> InlayHintKindFilter {
     match kind {
         Some(kind) if kind == InlayHintKind::TYPE => InlayHintKindFilter::Type,
@@ -111,8 +109,6 @@ pub(crate) struct FormattedInlayHints {
     pub truncated: bool,
 }
 
-// Wired by the upcoming ra_inlay_hints server task through formatting.
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct InlayHintSummary {
     character: u32,
@@ -122,8 +118,6 @@ struct InlayHintSummary {
     padding_right: bool,
 }
 
-// Wired by the upcoming ra_inlay_hints server task through formatting.
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct InlayHintGroup {
     line: u32,
@@ -225,8 +219,6 @@ pub(crate) fn format_inlay_hints(
     })
 }
 
-// Wired by the upcoming ra_inlay_hints server task through formatting.
-#[allow(dead_code)]
 fn label_text(label: &InlayHintLabel) -> String {
     match label {
         InlayHintLabel::String(value) => value.clone(),
@@ -240,8 +232,6 @@ fn label_text(label: &InlayHintLabel) -> String {
     }
 }
 
-// Wired by the upcoming ra_inlay_hints server task through formatting.
-#[allow(dead_code)]
 fn kind_name(kind: Option<InlayHintKind>) -> &'static str {
     match kind_filter_for(kind) {
         InlayHintKindFilter::Type => "type",
