@@ -2,7 +2,7 @@
 
 `rust-analyzer-mcp` is a local stdio MCP server that gives coding agents Rust IDE intelligence through rust-analyzer.
 
-It exposes readonly analysis and edit-preview `ra_*` MCP tools for `ra_hover`, `ra_definition`, `ra_references`, `ra_document_symbols`, `ra_completion`, `ra_inlay_hints`, `ra_format`, `ra_code_actions`, `ra_rename_preview`, `ra_diagnostics`, and `ra_workspace_diagnostics`. `ra_format`, `ra_code_actions`, and `ra_rename_preview` return previews only; they do not mutate files. Workspace control is separate: `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer.
+It exposes readonly rust-analyzer query and preview MCP tools for `ra_hover`, `ra_definition`, `ra_references`, `ra_document_symbols`, `ra_completion`, `ra_inlay_hints`, `ra_format`, `ra_code_actions`, `ra_rename_preview`, `ra_diagnostics`, and `ra_workspace_diagnostics`. `ra_format`, `ra_code_actions`, and `ra_rename_preview` return previews only; they do not mutate files. Workspace control is separate: `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer.
 
 It also exposes fixed `cargo_*` tools for common Rust verification, builds, and workspace inspection: `cargo_build`, `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, and `cargo_metadata`. Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
 
@@ -418,7 +418,7 @@ When metadata JSON parses successfully, the response includes `metadata_json` an
 - Symlink escapes and `..` escapes are rejected.
 - External crate locations returned by rust-analyzer are marked as external dependency source.
 - External snippets are readonly, bounded, and only read when the URI came from rust-analyzer.
-- Most `ra_*` tools are readonly analysis or edit-preview tools.
+- Rust-analyzer query tools are readonly analysis tools.
 - `ra_format`, `ra_code_actions`, and `ra_rename_preview` return edit previews only. They never write those edits to disk.
 - `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer. It does not write workspace files.
 - `cargo_*` tools execute fixed cargo commands in the active workspace. They do not expose arbitrary shell commands or free-form cargo subcommands.

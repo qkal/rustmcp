@@ -1055,7 +1055,7 @@ impl RaMcpServer {
 
 #[tool_handler(
     name = "rust-analyzer-mcp",
-    instructions = "Rust workspace tools that return structured JSON text. ra_* tools are readonly rust-analyzer IDE queries; cargo_* tools execute fixed cargo commands in the active workspace. Cargo may run workspace code, build scripts, proc macros, and tests with arbitrary project-defined side effects."
+    instructions = "Rust workspace tools that return structured JSON text. ra_set_workspace changes the active workspace; other ra_* tools are readonly rust-analyzer IDE query and preview tools. cargo_* tools execute fixed cargo commands in the active workspace. Cargo may run workspace code, build scripts, proc macros, and tests with arbitrary project-defined side effects."
 )]
 impl ServerHandler for RaMcpServer {}
 
