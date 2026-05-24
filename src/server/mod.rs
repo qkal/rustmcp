@@ -21,13 +21,17 @@ use crate::ra::params::{
     CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
     DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
     DEFAULT_REFERENCE_CONTEXT_LINES, DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams,
-    DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams,
-    RenamePreviewParams, SetWorkspaceParams, WorkspaceDiagnosticsParams, validate_rename_name,
+    DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, InlayHintsParams,
+    ReferencesParams, RenamePreviewParams, SetWorkspaceParams, WorkspaceDiagnosticsParams,
+    validate_rename_name,
 };
 use crate::ra::{
     completion::completion_items,
     diagnostics::diagnostic_summary,
     edits::{summarize_code_actions, summarize_workspace_edit},
+    inlay_hints::{
+        format_inlay_hints, max_hints_value, parse_kind_filters, read_source_lines, request_range,
+    },
     locate::locate,
     navigation::{definition_locations, references_truncated},
     symbols::document_symbols_result,
@@ -460,6 +464,135 @@ impl RaMcpServer {
             }),
             notes,
             truncated,
+        )
+    }
+
+    #[tool(
+        name = "ra_inlay_hints",
+        description = "Return rust-analyzer inlay hints for a Rust source file."
+    )]
+    async fn ra_inlay_hints(&self, Parameters(params): Parameters<InlayHintsParams>) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_inlay_hints",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+
+        let source_lines = match read_source_lines(&file) {
+            Ok(lines) => lines,
+            Err(error) => {
+                return failure(
+                    "ra_inlay_hints",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let max_hints = match max_hints_value(params.max_hints) {
+            Ok(max_hints) => max_hints,
+            Err(error) => {
+                return failure(
+                    "ra_inlay_hints",
+                    root,
+                    &params,
+                    error,
+                    "Check max_hints; accepted range is 1 through 1000.",
+                );
+            }
+        };
+        let filters = match parse_kind_filters(params.kinds.as_deref()) {
+            Ok(filters) => filters,
+            Err(error) => {
+                return failure(
+                    "ra_inlay_hints",
+                    root,
+                    &params,
+                    error,
+                    "Check kinds; accepted values are type, parameter, or other.",
+                );
+            }
+        };
+        let (range, range_result) =
+            match request_range(&source_lines, params.start_line, params.end_line) {
+                Ok(range) => range,
+                Err(error) => {
+                    return failure(
+                        "ra_inlay_hints",
+                        root,
+                        &params,
+                        error,
+                        "Check start_line and end_line; supply both or neither.",
+                    );
+                }
+            };
+
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_inlay_hints",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let hints = match client.inlay_hints(&file, range).await {
+            Ok(hints) => hints,
+            Err(error) => {
+                return failure(
+                    "ra_inlay_hints",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let formatted = match format_inlay_hints(
+            &params.file_path,
+            range_result,
+            &source_lines,
+            hints,
+            filters.as_ref(),
+            max_hints,
+            params.include_raw.unwrap_or(false),
+        ) {
+            Ok(formatted) => formatted,
+            Err(error) => {
+                return failure(
+                    "ra_inlay_hints",
+                    root,
+                    &params,
+                    error,
+                    "Check inlay hint formatting inputs.",
+                );
+            }
+        };
+        notes.extend(formatted.notes);
+
+        success(
+            "ra_inlay_hints",
+            root,
+            &params,
+            formatted.result,
+            notes,
+            formatted.truncated,
         )
     }
 
@@ -922,7 +1055,7 @@ impl RaMcpServer {
 
 #[tool_handler(
     name = "rust-analyzer-mcp",
-    instructions = "Rust workspace tools that return structured JSON text. ra_* tools are readonly rust-analyzer IDE queries; cargo_* tools execute fixed cargo commands in the active workspace. Cargo may run workspace code, build scripts, proc macros, and tests with arbitrary project-defined side effects."
+    instructions = "Rust workspace tools that return structured JSON text. ra_set_workspace changes the active workspace; other ra_* tools are readonly rust-analyzer IDE query and preview tools. cargo_* tools execute fixed cargo commands in the active workspace. Cargo may run workspace code, build scripts, proc macros, and tests with arbitrary project-defined side effects."
 )]
 impl ServerHandler for RaMcpServer {}
 

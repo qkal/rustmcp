@@ -2,7 +2,7 @@
 
 `rust-analyzer-mcp` is a local stdio MCP server that gives coding agents Rust IDE intelligence through rust-analyzer.
 
-It exposes readonly analysis and edit-preview `ra_*` MCP tools for `ra_hover`, `ra_definition`, `ra_references`, `ra_document_symbols`, `ra_completion`, `ra_format`, `ra_code_actions`, `ra_rename_preview`, `ra_diagnostics`, and `ra_workspace_diagnostics`. `ra_format`, `ra_code_actions`, and `ra_rename_preview` return previews only; they do not mutate files. Workspace control is separate: `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer.
+It exposes readonly rust-analyzer query and preview MCP tools for `ra_hover`, `ra_definition`, `ra_references`, `ra_document_symbols`, `ra_completion`, `ra_inlay_hints`, `ra_format`, `ra_code_actions`, `ra_rename_preview`, `ra_diagnostics`, and `ra_workspace_diagnostics`. `ra_format`, `ra_code_actions`, and `ra_rename_preview` return previews only; they do not mutate files. Workspace control is separate: `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer.
 
 It also exposes fixed `cargo_*` tools for common Rust verification, builds, and workspace inspection: `cargo_build`, `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, and `cargo_metadata`. Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
 
@@ -185,6 +185,23 @@ Params:
   "line": 0,
   "character": 7,
   "max_results": 50
+}
+```
+
+### `ra_inlay_hints`
+
+Return rust-analyzer inlay hints grouped by source line. By default the tool requests the whole file. Supply both `start_line` and `end_line` for an inclusive selected line range. `kinds` accepts `type`, `parameter`, and `other`; omit it to return all hints from rust-analyzer. Line and character positions are zero-based LSP positions; `character` is a UTF-16 code unit offset. The response uses the top-level MCP envelope `truncated` flag when `max_hints` limits output. Raw hints are informational only; this tool does not execute commands, apply text edits, or mutate files.
+
+Params:
+
+```json
+{
+  "file_path": "src/lib.rs",
+  "start_line": 0,
+  "end_line": 80,
+  "kinds": ["type", "parameter"],
+  "max_hints": 200,
+  "include_raw": false
 }
 ```
 
@@ -401,7 +418,7 @@ When metadata JSON parses successfully, the response includes `metadata_json` an
 - Symlink escapes and `..` escapes are rejected.
 - External crate locations returned by rust-analyzer are marked as external dependency source.
 - External snippets are readonly, bounded, and only read when the URI came from rust-analyzer.
-- Most `ra_*` tools are readonly analysis or edit-preview tools.
+- Rust-analyzer query tools are readonly analysis tools.
 - `ra_format`, `ra_code_actions`, and `ra_rename_preview` return edit previews only. They never write those edits to disk.
 - `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer. It does not write workspace files.
 - `cargo_*` tools execute fixed cargo commands in the active workspace. They do not expose arbitrary shell commands or free-form cargo subcommands.
@@ -463,7 +480,6 @@ These are intentionally not advertised in `tools/list` until implemented:
 
 - workspace symbols
 - implementations
-- inlay hints
 - macro expansion
 - call hierarchy
 

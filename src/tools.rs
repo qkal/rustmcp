@@ -5,11 +5,12 @@ pub use crate::cargo::params::{
 };
 pub use crate::ra::params::{
     CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
-    DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
-    DEFAULT_MAX_SNIPPET_BYTES, DEFAULT_REFERENCE_CONTEXT_LINES,
-    DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams, DiagnosticsParams,
-    DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams, RenamePreviewParams,
-    SetWorkspaceParams, WorkspaceDiagnosticsParams,
+    DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES,
+    DEFAULT_MAX_INLAY_HINTS, DEFAULT_MAX_RESULTS, DEFAULT_MAX_SNIPPET_BYTES,
+    DEFAULT_REFERENCE_CONTEXT_LINES, DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams,
+    DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, InlayHintsParams,
+    MAX_INLAY_HINTS, ReferencesParams, RenamePreviewParams, SetWorkspaceParams,
+    WorkspaceDiagnosticsParams,
 };
 pub use crate::server::response::{
     DEFAULT_MAX_TOTAL_OUTPUT_BYTES, ToolEnvelope, envelope_text, failure, success,
