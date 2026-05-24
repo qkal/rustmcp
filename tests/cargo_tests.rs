@@ -24,6 +24,7 @@ mod argument_construction {
             no_default_features: Some(true),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             all_targets: Some(true),
+            release: Some(true),
             locked: Some(true),
             offline: Some(false),
             frozen: Some(false),
@@ -49,6 +50,32 @@ mod argument_construction {
                 "--target",
                 "x86_64-unknown-linux-gnu",
                 "--all-targets",
+                "--release",
+                "--locked",
+            ]
+        );
+        assert_eq!(invocation.timeout_ms, 30_000);
+        assert_eq!(invocation.max_stdout_bytes, 10_000);
+        assert_eq!(invocation.max_stderr_bytes, 11_000);
+    }
+
+    #[test]
+    fn cargo_build_args_are_built_from_structured_options() {
+        let invocation = CargoInvocation::new(CargoCommandKind::Build, &build_params()).unwrap();
+
+        assert_eq!(invocation.command, "cargo");
+        assert_eq!(
+            invocation.args,
+            vec![
+                "build",
+                "--workspace",
+                "--features",
+                "serde,cli",
+                "--no-default-features",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--all-targets",
+                "--release",
                 "--locked",
             ]
         );
@@ -62,6 +89,7 @@ mod argument_construction {
         let params = CargoBuildParams {
             all_targets: Some(true),
             all_features: Some(true),
+            release: Some(true),
             ..CargoBuildParams::default()
         };
 
@@ -69,7 +97,7 @@ mod argument_construction {
 
         assert_eq!(
             invocation.args,
-            vec!["clippy", "--all-features", "--all-targets"]
+            vec!["clippy", "--all-features", "--all-targets", "--release"]
         );
     }
 
@@ -289,6 +317,20 @@ async fn cargo_check_runs_in_workspace_root() {
     write_crate(temp.path());
     let invocation =
         CargoInvocation::new(CargoCommandKind::Check, &CargoBuildParams::default()).unwrap();
+
+    let output = run_cargo(temp.path(), invocation).await.unwrap();
+
+    assert_eq!(output.command, "cargo");
+    assert!(output.status.success, "stderr was: {}", output.stderr);
+    assert!(!output.timed_out);
+}
+
+#[tokio::test]
+async fn cargo_build_runs_in_workspace_root() {
+    let temp = tempfile::tempdir().unwrap();
+    write_crate(temp.path());
+    let invocation =
+        CargoInvocation::new(CargoCommandKind::Build, &CargoBuildParams::default()).unwrap();
 
     let output = run_cargo(temp.path(), invocation).await.unwrap();
 

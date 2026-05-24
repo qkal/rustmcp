@@ -22,12 +22,12 @@ use crate::ra::params::{
     DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
     DEFAULT_REFERENCE_CONTEXT_LINES, DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams,
     DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, ReferencesParams,
-    SetWorkspaceParams, WorkspaceDiagnosticsParams,
+    RenamePreviewParams, SetWorkspaceParams, WorkspaceDiagnosticsParams, validate_rename_name,
 };
 use crate::ra::{
     completion::completion_items,
     diagnostics::diagnostic_summary,
-    edits::summarize_code_actions,
+    edits::{summarize_code_actions, summarize_workspace_edit},
     locate::locate,
     navigation::{definition_locations, references_truncated},
     symbols::document_symbols_result,
@@ -590,6 +590,95 @@ impl RaMcpServer {
     }
 
     #[tool(
+        name = "ra_rename_preview",
+        description = "Preview workspace edits for a symbol rename without applying them."
+    )]
+    async fn ra_rename_preview(
+        &self,
+        Parameters(params): Parameters<RenamePreviewParams>,
+    ) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_rename_preview",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+
+        if let Err(error) = validate_rename_name(&params.new_name) {
+            return failure(
+                "ra_rename_preview",
+                root,
+                &params,
+                error,
+                "Provide a non-empty Rust symbol name. rust-analyzer performs full Rust rename validation.",
+            );
+        }
+
+        notes.push("This tool returns rename edits only; it does not mutate files.".to_string());
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_rename_preview",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let edit = match client
+            .rename(
+                &file,
+                params.line,
+                params.character,
+                params.new_name.clone(),
+            )
+            .await
+        {
+            Ok(edit) => edit.unwrap_or_default(),
+            Err(error) => {
+                return failure(
+                    "ra_rename_preview",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let summary = summarize_workspace_edit(&edit);
+        if summary.change_count == 0 && summary.resource_operation_count == 0 {
+            notes.push("No rename edits returned.".to_string());
+        }
+
+        success(
+            "ra_rename_preview",
+            root,
+            &params,
+            json!({
+                "workspace_edit": edit,
+                "document_count": summary.document_count,
+                "change_count": summary.change_count,
+                "resource_operation_count": summary.resource_operation_count,
+            }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
         name = "ra_diagnostics",
         description = "Return cached diagnostics for a Rust source file."
     )]
@@ -720,6 +809,24 @@ impl RaMcpServer {
             notes,
             truncated,
         )
+    }
+
+    #[tool(
+        name = "cargo_build",
+        description = "Run fixed cargo build in the active workspace."
+    )]
+    async fn cargo_build(&self, Parameters(params): Parameters<CargoBuildParams>) -> String {
+        let (workspace_path, workspace_root) = self.cargo_workspace_root().await;
+        crate::cargo::tools::run_cargo_tool(
+            "cargo_build",
+            workspace_path,
+            workspace_root,
+            self.config.cargo_tools_enabled,
+            self.cargo_run_lock.clone(),
+            params,
+            CargoCommandKind::Build,
+        )
+        .await
     }
 
     #[tool(

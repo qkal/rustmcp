@@ -2,9 +2,9 @@
 
 `rust-analyzer-mcp` is a local stdio MCP server that gives coding agents Rust IDE intelligence through rust-analyzer.
 
-It exposes readonly `ra_*` MCP tools for hover, definitions, references, document symbols, completions, formatting edits, code actions, diagnostics, workspace diagnostics, and workspace switching. Formatting and code action tools return previews only; they do not mutate files.
+It exposes readonly analysis and edit-preview `ra_*` MCP tools for `ra_hover`, `ra_definition`, `ra_references`, `ra_document_symbols`, `ra_completion`, `ra_format`, `ra_code_actions`, `ra_rename_preview`, `ra_diagnostics`, and `ra_workspace_diagnostics`. `ra_format`, `ra_code_actions`, and `ra_rename_preview` return previews only; they do not mutate files. Workspace control is separate: `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer.
 
-It also exposes fixed `cargo_*` tools for common Rust verification and workspace inspection: `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, and `cargo_metadata`. Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
+It also exposes fixed `cargo_*` tools for common Rust verification, builds, and workspace inspection: `cargo_build`, `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, and `cargo_metadata`. Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
 
 ## Prerequisites
 
@@ -214,6 +214,21 @@ Params:
 }
 ```
 
+### `ra_rename_preview`
+
+Return workspace edits for a symbol rename without applying them.
+
+Params:
+
+```json
+{
+  "file_path": "src/lib.rs",
+  "line": 0,
+  "character": 7,
+  "new_name": "renamed_symbol"
+}
+```
+
 ### `ra_diagnostics`
 
 Open a file, wait briefly, and return cached diagnostics for that file.
@@ -234,11 +249,11 @@ Params:
 { "wait_ms": 3000, "max_files": 100, "max_diagnostics": 300 }
 ```
 
-### `cargo_check`
+### `cargo_build`
 
-Run fixed `cargo check` in the active workspace.
+Run fixed `cargo build` in the active workspace.
 
-Cargo tool parameters are structured, validated, and enforced by the server; requests that violate these rules are rejected instead of forwarded to cargo. `workspace` cannot be combined with `package`; `all_features` cannot be combined with `features` or `no_default_features`; string values such as `package`, `features`, `target`, `test_filter`, and `filter_platform` must not be empty or start with `-`; feature values also must not contain `,`.
+Cargo tool parameters are structured, validated, and enforced by the server; requests that violate these rules are rejected instead of forwarded to cargo. `workspace` cannot be combined with `package`; `all_features` cannot be combined with `features` or `no_default_features`; string values such as `package`, `features`, and `target` must not be empty or start with `-`; feature values also must not contain `,`.
 
 Params:
 
@@ -251,6 +266,34 @@ Params:
   "no_default_features": false,
   "target": "optional target triple",
   "all_targets": false,
+  "release": false,
+  "locked": false,
+  "offline": false,
+  "frozen": false,
+  "timeout_ms": 120000,
+  "max_stdout_bytes": 60000,
+  "max_stderr_bytes": 60000
+}
+```
+
+### `cargo_check`
+
+Run fixed `cargo check` in the active workspace.
+
+Cargo tool parameters are structured, validated, and enforced by the server; requests that violate these rules are rejected instead of forwarded to cargo. `workspace` cannot be combined with `package`; `all_features` cannot be combined with `features` or `no_default_features`; string values such as `package`, `features`, and `target` must not be empty or start with `-`; feature values also must not contain `,`.
+
+Params:
+
+```json
+{
+  "workspace": false,
+  "package": "optional package name",
+  "features": ["optional", "features"],
+  "all_features": false,
+  "no_default_features": false,
+  "target": "optional target triple",
+  "all_targets": false,
+  "release": false,
   "locked": false,
   "offline": false,
   "frozen": false,
@@ -301,6 +344,7 @@ Params:
   "no_default_features": false,
   "target": "optional target triple",
   "all_targets": false,
+  "release": false,
   "locked": false,
   "offline": false,
   "frozen": false,
@@ -357,7 +401,9 @@ When metadata JSON parses successfully, the response includes `metadata_json` an
 - Symlink escapes and `..` escapes are rejected.
 - External crate locations returned by rust-analyzer are marked as external dependency source.
 - External snippets are readonly, bounded, and only read when the URI came from rust-analyzer.
-- `ra_*` tools are readonly analysis tools.
+- Most `ra_*` tools are readonly analysis or edit-preview tools.
+- `ra_format`, `ra_code_actions`, and `ra_rename_preview` return edit previews only. They never write those edits to disk.
+- `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer. It does not write workspace files.
 - `cargo_*` tools execute fixed cargo commands in the active workspace. They do not expose arbitrary shell commands or free-form cargo subcommands.
 - Cargo commands may execute workspace code, build scripts, proc macros, and tests. Those executions can have arbitrary project-defined side effects, write artifacts under `target/`, and update `Cargo.lock` unless `locked` or `frozen` is used.
 - Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
@@ -382,6 +428,10 @@ Use a directory that exists. The server warns when the workspace root does not c
 
 rust-analyzer may still be indexing. Retry `ra_diagnostics` or increase `wait_ms`.
 
+### No rename edits returned
+
+Make sure the cursor is on the symbol name and that rust-analyzer has finished indexing the workspace.
+
 ### cargo not found
 
 Install Rust and make sure `cargo` is on `PATH`:
@@ -397,7 +447,7 @@ Increase `timeout_ms` for large workspaces or run a narrower package/test select
 
 ### cargo tools disabled
 
-Restart the server without `--disable-cargo-tools` if you want to use `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, or `cargo_metadata`.
+Restart the server without `--disable-cargo-tools` if you want to use `cargo_build`, `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, or `cargo_metadata`.
 
 ### stdout logging breaks stdio MCP
 
@@ -415,7 +465,6 @@ These are intentionally not advertised in `tools/list` until implemented:
 - implementations
 - inlay hints
 - macro expansion
-- rename preview
 - call hierarchy
 
 ## Development

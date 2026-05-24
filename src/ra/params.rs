@@ -70,6 +70,14 @@ pub struct CodeActionsParams {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
+pub struct RenamePreviewParams {
+    pub file_path: String,
+    pub line: u32,
+    pub character: u32,
+    pub new_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
 pub struct DiagnosticsParams {
     pub file_path: String,
     pub wait_ms: Option<u64>,
@@ -82,11 +90,22 @@ pub struct WorkspaceDiagnosticsParams {
     pub max_diagnostics: Option<u32>,
 }
 
+pub(crate) fn validate_rename_name(new_name: &str) -> Result<(), &'static str> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("new_name must not be empty or whitespace-only");
+    }
+    if trimmed.starts_with('-') {
+        return Err("new_name must not start with '-'");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{DEFAULT_MAX_RESULTS, HoverParams};
+    use super::{DEFAULT_MAX_RESULTS, HoverParams, RenamePreviewParams, validate_rename_name};
 
     #[test]
     fn hover_params_schema_is_generated() {
@@ -98,5 +117,29 @@ mod tests {
     #[test]
     fn default_max_results_remains_fifty() {
         assert_eq!(json!(DEFAULT_MAX_RESULTS), json!(50));
+    }
+
+    #[test]
+    fn rename_preview_params_schema_is_generated() {
+        let schema = schemars::schema_for!(RenamePreviewParams);
+        let schema_json = serde_json::to_value(schema).unwrap();
+        assert_eq!(schema_json["title"], "RenamePreviewParams");
+    }
+
+    #[test]
+    fn rename_name_validation_rejects_empty_whitespace_and_option_like_values() {
+        assert_eq!(
+            validate_rename_name("").unwrap_err(),
+            "new_name must not be empty or whitespace-only"
+        );
+        assert_eq!(
+            validate_rename_name("   ").unwrap_err(),
+            "new_name must not be empty or whitespace-only"
+        );
+        assert_eq!(
+            validate_rename_name(" --bad").unwrap_err(),
+            "new_name must not start with '-'"
+        );
+        assert!(validate_rename_name("renamed_answer").is_ok());
     }
 }

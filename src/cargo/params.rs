@@ -17,6 +17,7 @@ pub struct CargoBuildParams {
     pub no_default_features: Option<bool>,
     pub target: Option<String>,
     pub all_targets: Option<bool>,
+    pub release: Option<bool>,
     pub locked: Option<bool>,
     pub offline: Option<bool>,
     pub frozen: Option<bool>,
@@ -77,6 +78,7 @@ mod tests {
         let params = CargoBuildParams::default();
         assert_eq!(params.workspace, None);
         assert_eq!(params.package, None);
+        assert_eq!(params.release, None);
         assert_eq!(params.timeout_ms, None);
     }
 

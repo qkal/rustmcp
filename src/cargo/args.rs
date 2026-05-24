@@ -8,6 +8,7 @@ use crate::cargo::params::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CargoCommandKind {
+    Build,
     Check,
     Clippy,
     Test,
@@ -90,6 +91,7 @@ pub trait CargoArgs {
 impl CargoArgs for CargoBuildParams {
     fn args(&self, kind: CargoCommandKind) -> Result<Vec<String>, CargoValidationError> {
         let command = match kind {
+            CargoCommandKind::Build => "build",
             CargoCommandKind::Check => "check",
             CargoCommandKind::Clippy => "clippy",
             kind => return Err(CargoValidationError::UnsupportedKind { kind }),
@@ -112,6 +114,7 @@ impl CargoArgs for CargoBuildParams {
         )?;
         push_optional_value(&mut args, "--target", "target", self.target.as_deref())?;
         push_bool(&mut args, "--all-targets", self.all_targets);
+        push_bool(&mut args, "--release", self.release);
         push_bool(&mut args, "--locked", self.locked);
         push_bool(&mut args, "--offline", self.offline);
         push_bool(&mut args, "--frozen", self.frozen);

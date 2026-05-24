@@ -84,6 +84,60 @@ async fn rust_analyzer_smoke_hover_when_available() {
 }
 
 #[tokio::test]
+async fn rust_analyzer_smoke_rename_when_available() {
+    if which::which("rust-analyzer").is_err() {
+        eprintln!("skipping: rust-analyzer not found on PATH");
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"ra_mcp_rename_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\npub fn call() -> i32 { answer() }\n",
+    )
+    .unwrap();
+
+    let workspace = Workspace::new(temp.path()).unwrap();
+    let mut client = RustAnalyzerClient::spawn(workspace.clone()).await.unwrap();
+    let file = workspace.resolve_existing_file("src/lib.rs").unwrap();
+    let mut edit = None;
+    for _ in 0..20 {
+        match client
+            .rename(&file, 0, 7, "renamed_answer".to_string())
+            .await
+        {
+            Ok(value) => {
+                edit = value;
+                if edit.is_some() {
+                    break;
+                }
+            }
+            Err(error)
+                if error.to_string().contains("content modified")
+                    || error
+                        .to_string()
+                        .contains("No references found at position") => {}
+            Err(error) => panic!("rename failed: {error}"),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    client.shutdown().await.unwrap();
+
+    let edit = edit.expect("expected rename edit from rust-analyzer");
+    let serialized = serde_json::to_value(edit).unwrap();
+    assert!(
+        serialized.to_string().contains("renamed_answer"),
+        "rename edit was {serialized}"
+    );
+}
+
+#[tokio::test]
 async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
     let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
     let temp = tempfile::tempdir().unwrap();
@@ -128,8 +182,10 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
         "ra_completion",
         "ra_format",
         "ra_code_actions",
+        "ra_rename_preview",
         "ra_diagnostics",
         "ra_workspace_diagnostics",
+        "cargo_build",
         "cargo_check",
         "cargo_test",
         "cargo_clippy",
@@ -141,6 +197,186 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
             "missing {expected}; got {names:?}"
         );
     }
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_rename_preview_smoke_when_available() {
+    if which::which("rust-analyzer").is_err() {
+        eprintln!("skipping: rust-analyzer not found on PATH");
+        return;
+    }
+
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"rename_preview_mcp_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\npub fn call() -> i32 { answer() }\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    let mut payload = None;
+    for _ in 0..20 {
+        write_mcp_line(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "ra_rename_preview",
+                    "arguments": {
+                        "file_path": "src/lib.rs",
+                        "line": 0,
+                        "character": 7,
+                        "new_name": "renamed_answer"
+                    }
+                }
+            }),
+        )
+        .await;
+        let response = read_mcp_line(&mut stdout).await;
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        let current_payload: Value = serde_json::from_str(text).unwrap();
+        let has_edits = current_payload["ok"] == true
+            && current_payload["result"]["change_count"]
+                .as_u64()
+                .is_some_and(|count| count >= 1);
+        if has_edits {
+            payload = Some(current_payload);
+            break;
+        }
+
+        if current_payload["ok"] == false {
+            let error = current_payload["error"].as_str().unwrap_or_default();
+            if !(error.contains("content modified")
+                || error.contains("No references found at position"))
+            {
+                panic!("rename preview failed: {current_payload}");
+            }
+        }
+
+        payload = Some(current_payload);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let payload = payload.expect("rename preview returned a payload");
+    if !(payload["ok"] == true
+        && payload["result"]["change_count"]
+            .as_u64()
+            .is_some_and(|count| count >= 1))
+    {
+        panic!("rename preview did not return edits after retries: {payload}");
+    }
+
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["tool"], "ra_rename_preview");
+    assert!(
+        payload["result"]["change_count"].as_u64().unwrap() >= 1,
+        "payload was {payload}"
+    );
+    assert!(
+        payload["result"]["document_count"].as_u64().unwrap() >= 1,
+        "payload was {payload}"
+    );
+    assert_eq!(payload["result"]["resource_operation_count"], 0);
+    assert!(
+        payload["result"]["workspace_edit"]
+            .to_string()
+            .contains("renamed_answer"),
+        "payload was {payload}"
+    );
+    assert!(
+        payload["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("does not mutate files")),
+        "notes were {:?}",
+        payload["notes"]
+    );
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_rename_preview_rejects_whitespace_name() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"rename_preview_validation_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "ra_rename_preview",
+                "arguments": {
+                    "file_path": "src/lib.rs",
+                    "line": 0,
+                    "character": 7,
+                    "new_name": "   "
+                }
+            }
+        }),
+    )
+    .await;
+    let response = read_mcp_line(&mut stdout).await;
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["tool"], "ra_rename_preview");
+    assert!(
+        payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("whitespace-only")
+    );
 
     child.kill().await.unwrap();
 }
