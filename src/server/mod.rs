@@ -1,12 +1,15 @@
 pub mod response;
 pub(crate) mod state;
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 
 use lsp_types::{Hover, HoverContents, MarkedString, Position, Range};
 use rmcp::{ServerHandler, handler::server::wrapper::Parameters, tool, tool_handler, tool_router};
 use serde_json::json;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::{
+    process::Command as TokioCommand,
+    sync::{Mutex, Semaphore},
+};
 
 pub use self::state::ServerConfig;
 use self::{
@@ -18,12 +21,14 @@ use crate::cargo::params::{
     CargoBuildParams, CargoFmtCheckParams, CargoMetadataParams, CargoTestParams,
 };
 use crate::ra::params::{
-    CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
-    DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
+    CallHierarchyParams, CodeActionsParams, CompletionParams, DEFAULT_DEFINITION_CONTEXT_LINES,
+    DEFAULT_DIAGNOSTICS_WAIT_MS, DEFAULT_MAX_CALL_HIERARCHY_ITEMS, DEFAULT_MAX_CALLS_PER_ITEM,
+    DEFAULT_MAX_DIAGNOSTICS, DEFAULT_MAX_FILES, DEFAULT_MAX_RESULTS,
     DEFAULT_REFERENCE_CONTEXT_LINES, DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS, DefinitionParams,
-    DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, InlayHintsParams,
-    ReferencesParams, RenamePreviewParams, SetWorkspaceParams, WorkspaceDiagnosticsParams,
-    validate_rename_name,
+    DiagnosticsParams, DocumentSymbolsParams, FormatParams, HoverParams, ImplementationsParams,
+    InlayHintsParams, MacroExpansionParams, ReferencesParams, RenamePreviewParams,
+    SetWorkspaceParams, WorkspaceDiagnosticsParams, WorkspaceSymbolsParams, validate_rename_name,
+    validate_workspace_symbol_query,
 };
 use crate::ra::{
     completion::completion_items,
@@ -34,7 +39,7 @@ use crate::ra::{
     },
     locate::locate,
     navigation::{definition_locations, references_truncated},
-    symbols::document_symbols_result,
+    symbols::{document_symbols_result, workspace_symbols_result},
 };
 use crate::{cargo::CargoCommandKind, error::hint_for_error, workspace::Workspace};
 
@@ -71,6 +76,77 @@ impl RaMcpServer {
 
 #[tool_router]
 impl RaMcpServer {
+    #[tool(
+        name = "server_info",
+        description = "Report local rust-analyzer-mcp runtime, workspace, and tool availability."
+    )]
+    async fn server_info(&self) -> String {
+        let (workspace_root, warnings) = {
+            let state = self.state.lock().await;
+            (state.workspace_root(), state.workspace().warnings().clone())
+        };
+        let input = json!({});
+        let rust_analyzer = executable_info("rust-analyzer", &["--version"]).await;
+        let cargo = executable_info("cargo", &["--version"]).await;
+
+        success(
+            "server_info",
+            workspace_root.clone(),
+            &input,
+            json!({
+                "server": {
+                    "name": "rust-analyzer-mcp",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "transport": "stdio",
+                },
+                "workspace_root": workspace_root,
+                "workspace_warnings": warnings,
+                "cargo_tools_enabled": self.config.cargo_tools_enabled,
+                "rust_analyzer": rust_analyzer,
+                "cargo": cargo,
+                "limits": {
+                    "max_total_output_bytes": crate::server::response::DEFAULT_MAX_TOTAL_OUTPUT_BYTES,
+                    "cargo_timeout_ms_default": crate::cargo::params::DEFAULT_CARGO_TIMEOUT_MS,
+                    "cargo_timeout_ms_max": crate::cargo::params::MAX_CARGO_TIMEOUT_MS,
+                    "cargo_output_bytes_max": crate::cargo::params::MAX_CARGO_OUTPUT_BYTES,
+                    "ra_default_max_results": DEFAULT_MAX_RESULTS,
+                    "ra_default_max_files": DEFAULT_MAX_FILES,
+                    "ra_default_max_diagnostics": DEFAULT_MAX_DIAGNOSTICS,
+                },
+                "tools": {
+                    "ra": [
+                        "ra_set_workspace",
+                        "ra_hover",
+                        "ra_definition",
+                        "ra_implementations",
+                        "ra_references",
+                        "ra_document_symbols",
+                        "ra_workspace_symbols",
+                        "ra_completion",
+                        "ra_inlay_hints",
+                        "ra_macro_expansion",
+                        "ra_call_hierarchy",
+                        "ra_format",
+                        "ra_code_actions",
+                        "ra_rename_preview",
+                        "ra_diagnostics",
+                        "ra_workspace_diagnostics",
+                    ],
+                    "cargo": [
+                        "cargo_build",
+                        "cargo_check",
+                        "cargo_test",
+                        "cargo_clippy",
+                        "cargo_fmt_check",
+                        "cargo_metadata",
+                    ],
+                },
+            }),
+            Vec::new(),
+            false,
+        )
+    }
+
     #[tool(
         name = "ra_set_workspace",
         description = "Change the active Rust workspace root and restart rust-analyzer."
@@ -257,6 +333,84 @@ impl RaMcpServer {
         )
     }
 
+    #[tool(
+        name = "ra_implementations",
+        description = "Find implementations for a trait, type, or symbol at a position."
+    )]
+    async fn ra_implementations(
+        &self,
+        Parameters(params): Parameters<ImplementationsParams>,
+    ) -> String {
+        let (root, file, workspace, notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_implementations",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let mut client = match self.client.ensure_client(workspace.clone()).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_implementations",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let response = match client
+            .implementation(&file, params.line, params.character)
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return failure(
+                    "ra_implementations",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let max_results = params.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
+        let context_lines = params
+            .context_lines
+            .unwrap_or(DEFAULT_DEFINITION_CONTEXT_LINES);
+        let include_snippets = params.include_snippets.unwrap_or(true);
+        let locations = definition_locations(response);
+        let truncated = locations.len() > max_results;
+        let located = locations
+            .into_iter()
+            .take(max_results)
+            .map(|(uri, range)| locate(&workspace, uri, range, context_lines, include_snippets))
+            .collect::<Vec<_>>();
+
+        success(
+            "ra_implementations",
+            root,
+            &params,
+            json!({
+                "locations": located,
+                "max_results": max_results,
+            }),
+            notes,
+            truncated,
+        )
+    }
+
     #[tool(name = "ra_references", description = "Find references at a position.")]
     async fn ra_references(&self, Parameters(params): Parameters<ReferencesParams>) -> String {
         let (root, file, workspace, notes) = {
@@ -398,6 +552,65 @@ impl RaMcpServer {
             document_symbols_result(symbols),
             notes,
             false,
+        )
+    }
+
+    #[tool(
+        name = "ra_workspace_symbols",
+        description = "Search rust-analyzer workspace symbols by query."
+    )]
+    async fn ra_workspace_symbols(
+        &self,
+        Parameters(params): Parameters<WorkspaceSymbolsParams>,
+    ) -> String {
+        let snapshot = {
+            let state = self.state.lock().await;
+            state.workspace_snapshot()
+        };
+        let root = snapshot.root;
+        if let Err(error) = validate_workspace_symbol_query(&params.query) {
+            return failure(
+                "ra_workspace_symbols",
+                root,
+                &params,
+                error,
+                "Provide a non-empty workspace symbol query.",
+            );
+        }
+        let client = match self.client.ensure_client(snapshot.workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_workspace_symbols",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let response = match client.workspace_symbols(params.query.clone()).await {
+            Ok(response) => response,
+            Err(error) => {
+                return failure(
+                    "ra_workspace_symbols",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let max_results = params.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
+        let (result, truncated) = workspace_symbols_result(response, max_results);
+
+        success(
+            "ra_workspace_symbols",
+            root,
+            &params,
+            result,
+            snapshot.notes,
+            truncated,
         )
     }
 
@@ -812,6 +1025,189 @@ impl RaMcpServer {
     }
 
     #[tool(
+        name = "ra_macro_expansion",
+        description = "Preview the rust-analyzer macro expansion at a position."
+    )]
+    async fn ra_macro_expansion(
+        &self,
+        Parameters(params): Parameters<MacroExpansionParams>,
+    ) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_macro_expansion",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        notes.push(
+            "This tool returns macro expansion text only; it does not mutate files.".to_string(),
+        );
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_macro_expansion",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let expansion = match client
+            .macro_expansion(&file, params.line, params.character)
+            .await
+        {
+            Ok(expansion) => expansion,
+            Err(error) => {
+                return failure(
+                    "ra_macro_expansion",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        if expansion.is_none() {
+            notes.push("No macro expansion returned for this position.".to_string());
+        }
+
+        success(
+            "ra_macro_expansion",
+            root,
+            &params,
+            json!({ "expansion": expansion }),
+            notes,
+            false,
+        )
+    }
+
+    #[tool(
+        name = "ra_call_hierarchy",
+        description = "Return prepared call hierarchy items with bounded incoming and outgoing calls."
+    )]
+    async fn ra_call_hierarchy(
+        &self,
+        Parameters(params): Parameters<CallHierarchyParams>,
+    ) -> String {
+        let (root, file, workspace, mut notes) = {
+            let state = self.state.lock().await;
+            let snapshot = state.workspace_snapshot();
+            let file = match snapshot.workspace.resolve_existing_file(&params.file_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    return failure(
+                        "ra_call_hierarchy",
+                        snapshot.root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            (snapshot.root, file, snapshot.workspace, snapshot.notes)
+        };
+        let max_items = params
+            .max_items
+            .unwrap_or(DEFAULT_MAX_CALL_HIERARCHY_ITEMS)
+            .min(100) as usize;
+        let max_calls_per_item = params
+            .max_calls_per_item
+            .unwrap_or(DEFAULT_MAX_CALLS_PER_ITEM)
+            .min(200) as usize;
+        let mut client = match self.client.ensure_client(workspace).await {
+            Ok(client) => client,
+            Err(error) => {
+                return failure(
+                    "ra_call_hierarchy",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        let prepared = match client
+            .prepare_call_hierarchy(&file, params.line, params.character)
+            .await
+        {
+            Ok(items) => items,
+            Err(error) => {
+                return failure(
+                    "ra_call_hierarchy",
+                    root,
+                    &params,
+                    error.to_string(),
+                    hint_for_error(&error),
+                );
+            }
+        };
+        if prepared.is_empty() {
+            notes.push("No call hierarchy items returned for this position.".to_string());
+        }
+        let items_truncated = prepared.len() > max_items;
+        let mut result_items = Vec::new();
+        let mut calls_truncated = false;
+        for item in prepared.into_iter().take(max_items) {
+            let incoming = match client.incoming_calls(item.clone()).await {
+                Ok(calls) => calls,
+                Err(error) => {
+                    return failure(
+                        "ra_call_hierarchy",
+                        root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            let outgoing = match client.outgoing_calls(item.clone()).await {
+                Ok(calls) => calls,
+                Err(error) => {
+                    return failure(
+                        "ra_call_hierarchy",
+                        root,
+                        &params,
+                        error.to_string(),
+                        hint_for_error(&error),
+                    );
+                }
+            };
+            calls_truncated |=
+                incoming.len() > max_calls_per_item || outgoing.len() > max_calls_per_item;
+            result_items.push(json!({
+                "item": item,
+                "incoming": incoming.into_iter().take(max_calls_per_item).collect::<Vec<_>>(),
+                "outgoing": outgoing.into_iter().take(max_calls_per_item).collect::<Vec<_>>(),
+            }));
+        }
+
+        success(
+            "ra_call_hierarchy",
+            root,
+            &params,
+            json!({
+                "items": result_items,
+                "max_items": max_items,
+                "max_calls_per_item": max_calls_per_item,
+            }),
+            notes,
+            items_truncated || calls_truncated,
+        )
+    }
+
+    #[tool(
         name = "ra_diagnostics",
         description = "Return cached diagnostics for a Rust source file."
     )]
@@ -1077,5 +1473,47 @@ fn marked_string(marked: &MarkedString) -> String {
         MarkedString::LanguageString(language) => {
             format!("```{}\n{}\n```", language.language, language.value)
         }
+    }
+}
+
+async fn executable_info(command_name: &str, version_args: &[&str]) -> serde_json::Value {
+    let path = match which::which(command_name) {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({
+                "available": false,
+                "path": null,
+                "version": null,
+                "error": error.to_string(),
+            });
+        }
+    };
+
+    match TokioCommand::new(&path)
+        .args(version_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let version = if stdout.is_empty() { stderr } else { stdout };
+            json!({
+                "available": true,
+                "path": path.display().to_string(),
+                "version": version,
+                "status_success": output.status.success(),
+            })
+        }
+        Err(error) => json!({
+            "available": true,
+            "path": path.display().to_string(),
+            "version": null,
+            "status_success": false,
+            "error": error.to_string(),
+        }),
     }
 }

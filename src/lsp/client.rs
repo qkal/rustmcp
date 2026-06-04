@@ -10,6 +10,8 @@ use std::{
 };
 
 use lsp_types::{
+    CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
+    CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CodeActionContext, CodeActionParams, CodeActionResponse, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, FormattingOptions, GotoDefinitionParams,
@@ -17,7 +19,7 @@ use lsp_types::{
     PartialResultParams, Position, PublishDiagnosticsParams, Range, ReferenceContext,
     ReferenceParams, RenameParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
     TextDocumentItem, TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
-    WorkDoneProgressParams, WorkspaceEdit,
+    WorkDoneProgressParams, WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -134,6 +136,22 @@ impl RustAnalyzerClient {
             .await
     }
 
+    pub async fn implementation(
+        &mut self,
+        file: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = self.open_document(file).await?;
+        let params = GotoDefinitionParams {
+            text_document_position_params: position_params(uri, line, character),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.request_optional("textDocument/implementation", params)
+            .await
+    }
+
     pub async fn references(
         &mut self,
         file: &Path,
@@ -153,6 +171,18 @@ impl RustAnalyzerClient {
         self.request_optional("textDocument/references", params)
             .await
             .map(Option::unwrap_or_default)
+    }
+
+    pub async fn workspace_symbols(
+        &self,
+        query: String,
+    ) -> Result<Option<WorkspaceSymbolResponse>> {
+        let params = WorkspaceSymbolParams {
+            partial_result_params: PartialResultParams::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            query,
+        };
+        self.request_optional("workspace/symbol", params).await
     }
 
     pub async fn document_symbols(
@@ -252,6 +282,65 @@ impl RustAnalyzerClient {
         self.request_optional("textDocument/rename", params).await
     }
 
+    pub async fn macro_expansion(
+        &mut self,
+        file: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<Value>> {
+        let uri = self.open_document(file).await?;
+        let params = json!({
+            "textDocument": TextDocumentIdentifier::new(uri),
+            "position": Position::new(line, character),
+        });
+        self.request_optional("rust-analyzer/expandMacro", params)
+            .await
+    }
+
+    pub async fn prepare_call_hierarchy(
+        &mut self,
+        file: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<CallHierarchyItem>> {
+        let uri = self.open_document(file).await?;
+        let params = CallHierarchyPrepareParams {
+            text_document_position_params: position_params(uri, line, character),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.request_optional("textDocument/prepareCallHierarchy", params)
+            .await
+            .map(Option::unwrap_or_default)
+    }
+
+    pub async fn incoming_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Vec<CallHierarchyIncomingCall>> {
+        let params = CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.request_optional("callHierarchy/incomingCalls", params)
+            .await
+            .map(Option::unwrap_or_default)
+    }
+
+    pub async fn outgoing_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Vec<CallHierarchyOutgoingCall>> {
+        let params = CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.request_optional("callHierarchy/outgoingCalls", params)
+            .await
+            .map(Option::unwrap_or_default)
+    }
+
     pub async fn open_document(&mut self, file: &Path) -> Result<Uri> {
         let canonical = self.workspace.resolve_existing_file(file)?;
         let text = tokio::fs::read_to_string(&canonical).await?;
@@ -343,13 +432,17 @@ impl RustAnalyzerClient {
                     "configuration": true,
                     "workspaceEdit": {
                         "documentChanges": true
-                    }
+                    },
+                    "symbol": {}
                 },
                 "textDocument": {
                     "hover": {
                         "contentFormat": ["markdown", "plaintext"]
                     },
                     "definition": {
+                        "linkSupport": true
+                    },
+                    "implementation": {
                         "linkSupport": true
                     },
                     "references": {},
@@ -375,7 +468,11 @@ impl RustAnalyzerClient {
                         "relatedInformation": true,
                         "versionSupport": true
                     },
-                    "inlayHint": {}
+                    "inlayHint": {},
+                    "callHierarchy": {}
+                },
+                "experimental": {
+                    "expandMacro": true
                 },
                 "general": {
                     "positionEncodings": ["utf-16"]

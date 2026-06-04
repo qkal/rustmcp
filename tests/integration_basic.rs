@@ -5,6 +5,8 @@ use rust_analyzer_mcp::workspace::Workspace;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+static RUST_ANALYZER_SMOKE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn diagnostics_cache_updates_by_uri() {
     let cache = rust_analyzer_mcp::lsp::protocol::DiagnosticsCache::default();
@@ -30,6 +32,7 @@ async fn rust_analyzer_smoke_hover_when_available() {
         eprintln!("skipping: rust-analyzer not found on PATH");
         return;
     }
+    let _ra_lock = RUST_ANALYZER_SMOKE_LOCK.lock().await;
 
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -89,6 +92,7 @@ async fn rust_analyzer_smoke_rename_when_available() {
         eprintln!("skipping: rust-analyzer not found on PATH");
         return;
     }
+    let _ra_lock = RUST_ANALYZER_SMOKE_LOCK.lock().await;
 
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -143,6 +147,7 @@ async fn rust_analyzer_smoke_inlay_hints_request_when_available() {
         eprintln!("skipping: rust-analyzer not found on PATH");
         return;
     }
+    let _ra_lock = RUST_ANALYZER_SMOKE_LOCK.lock().await;
 
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -226,13 +231,18 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
         .collect();
 
     for expected in [
+        "server_info",
         "ra_set_workspace",
         "ra_hover",
         "ra_definition",
+        "ra_implementations",
         "ra_references",
         "ra_document_symbols",
+        "ra_workspace_symbols",
         "ra_completion",
         "ra_inlay_hints",
+        "ra_macro_expansion",
+        "ra_call_hierarchy",
         "ra_format",
         "ra_code_actions",
         "ra_rename_preview",
@@ -255,11 +265,59 @@ async fn mcp_tools_list_smoke_has_mvp_tools_and_protocol_stdout() {
 }
 
 #[tokio::test]
+async fn ra_workspace_symbols_rejects_empty_query_before_rust_analyzer_request() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"workspace_symbols_validation_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "ra_workspace_symbols",
+                "arguments": { "query": "   " }
+            }
+        }),
+    )
+    .await;
+    let response = read_mcp_line(&mut stdout).await;
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["tool"], "ra_workspace_symbols");
+    assert!(payload["error"].as_str().unwrap().contains("query"));
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
 async fn mcp_rename_preview_smoke_when_available() {
     if which::which("rust-analyzer").is_err() {
         eprintln!("skipping: rust-analyzer not found on PATH");
         return;
     }
+    let _ra_lock = RUST_ANALYZER_SMOKE_LOCK.lock().await;
 
     let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
     let temp = tempfile::tempdir().unwrap();
@@ -429,6 +487,76 @@ async fn mcp_rename_preview_rejects_whitespace_name() {
             .as_str()
             .unwrap()
             .contains("whitespace-only")
+    );
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn server_info_smoke_reports_local_runtime_state() {
+    let exe = env!("CARGO_BIN_EXE_rust-analyzer-mcp");
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"server_info_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+
+    let mut child = tokio::process::Command::new(exe)
+        .arg("--workspace")
+        .arg(temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    initialize_mcp(&mut stdin, &mut stdout).await;
+
+    write_mcp_line(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "server_info",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+    let response = read_mcp_line(&mut stdout).await;
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["tool"], "server_info");
+    assert_eq!(payload["result"]["server"]["name"], "rust-analyzer-mcp");
+    assert_eq!(payload["result"]["cargo_tools_enabled"], true);
+    assert!(
+        payload["result"]["workspace_root"]
+            .as_str()
+            .unwrap()
+            .contains("server_info_smoke")
+            || !payload["result"]["workspace_root"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+    );
+    assert!(
+        payload["result"]["tools"]["ra"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ra_hover"))
+    );
+    assert!(
+        payload["result"]["tools"]["cargo"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("cargo_build"))
     );
 
     child.kill().await.unwrap();

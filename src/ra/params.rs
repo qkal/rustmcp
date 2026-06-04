@@ -11,6 +11,8 @@ pub const DEFAULT_WORKSPACE_DIAGNOSTICS_WAIT_MS: u64 = 3_000;
 pub const DEFAULT_MAX_FILES: u32 = 100;
 pub const DEFAULT_MAX_DIAGNOSTICS: u32 = 300;
 pub const DEFAULT_MAX_SNIPPET_BYTES: usize = 8_192;
+pub const DEFAULT_MAX_CALL_HIERARCHY_ITEMS: u32 = 20;
+pub const DEFAULT_MAX_CALLS_PER_ITEM: u32 = 50;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
 pub struct SetWorkspaceParams {
@@ -90,6 +92,38 @@ pub struct RenamePreviewParams {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
+pub struct ImplementationsParams {
+    pub file_path: String,
+    pub line: u32,
+    pub character: u32,
+    pub max_results: Option<u32>,
+    pub context_lines: Option<u32>,
+    pub include_snippets: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
+pub struct WorkspaceSymbolsParams {
+    pub query: String,
+    pub max_results: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
+pub struct MacroExpansionParams {
+    pub file_path: String,
+    pub line: u32,
+    pub character: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
+pub struct CallHierarchyParams {
+    pub file_path: String,
+    pub line: u32,
+    pub character: u32,
+    pub max_items: Option<u32>,
+    pub max_calls_per_item: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema, Serialize)]
 pub struct DiagnosticsParams {
     pub file_path: String,
     pub wait_ms: Option<u64>,
@@ -113,13 +147,21 @@ pub(crate) fn validate_rename_name(new_name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+pub(crate) fn validate_workspace_symbol_query(query: &str) -> Result<(), &'static str> {
+    if query.trim().is_empty() {
+        return Err("query must not be empty or whitespace-only");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::{
-        DEFAULT_MAX_INLAY_HINTS, DEFAULT_MAX_RESULTS, HoverParams, InlayHintsParams,
-        RenamePreviewParams, validate_rename_name,
+        CallHierarchyParams, DEFAULT_MAX_INLAY_HINTS, DEFAULT_MAX_RESULTS, HoverParams,
+        ImplementationsParams, InlayHintsParams, MacroExpansionParams, RenamePreviewParams,
+        WorkspaceSymbolsParams, validate_rename_name, validate_workspace_symbol_query,
     };
 
     #[test]
@@ -168,5 +210,33 @@ mod tests {
     #[test]
     fn default_max_inlay_hints_remains_two_hundred() {
         assert_eq!(json!(DEFAULT_MAX_INLAY_HINTS), json!(200));
+    }
+
+    #[test]
+    fn expanded_tool_params_schemas_are_generated() {
+        let schemas = [
+            serde_json::to_value(schemars::schema_for!(ImplementationsParams)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(WorkspaceSymbolsParams)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(MacroExpansionParams)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(CallHierarchyParams)).unwrap(),
+        ];
+
+        assert_eq!(schemas[0]["title"], "ImplementationsParams");
+        assert_eq!(schemas[1]["title"], "WorkspaceSymbolsParams");
+        assert_eq!(schemas[2]["title"], "MacroExpansionParams");
+        assert_eq!(schemas[3]["title"], "CallHierarchyParams");
+    }
+
+    #[test]
+    fn workspace_symbol_query_rejects_empty_values() {
+        assert_eq!(
+            validate_workspace_symbol_query("").unwrap_err(),
+            "query must not be empty or whitespace-only"
+        );
+        assert_eq!(
+            validate_workspace_symbol_query("   ").unwrap_err(),
+            "query must not be empty or whitespace-only"
+        );
+        assert!(validate_workspace_symbol_query("answer").is_ok());
     }
 }

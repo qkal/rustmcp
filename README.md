@@ -2,7 +2,7 @@
 
 `rust-analyzer-mcp` is a local stdio MCP server that gives coding agents Rust IDE intelligence through rust-analyzer.
 
-It exposes readonly rust-analyzer query and preview MCP tools for `ra_hover`, `ra_definition`, `ra_references`, `ra_document_symbols`, `ra_completion`, `ra_inlay_hints`, `ra_format`, `ra_code_actions`, `ra_rename_preview`, `ra_diagnostics`, and `ra_workspace_diagnostics`. `ra_format`, `ra_code_actions`, and `ra_rename_preview` return previews only; they do not mutate files. Workspace control is separate: `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer.
+It exposes readonly `ra_*` MCP tools for hover, definitions, implementations, references, document symbols, workspace symbols, completions, inlay hints, macro expansion previews, call hierarchy, formatting edits, code actions, rename previews, diagnostics, workspace diagnostics, and workspace switching. Formatting, code action, macro expansion, and rename tools return previews only; they do not mutate files.
 
 It also exposes fixed `cargo_*` tools for common Rust verification, builds, and workspace inspection: `cargo_build`, `cargo_check`, `cargo_test`, `cargo_clippy`, `cargo_fmt_check`, and `cargo_metadata`. Cargo tools are enabled by default and can be disabled with `--disable-cargo-tools`.
 
@@ -38,6 +38,25 @@ Disable cargo tools when you want rust-analyzer-only behavior:
 If `--workspace` is omitted, the server uses the current working directory.
 
 The server uses stdio for MCP protocol messages. It never writes logs, banners, or human text to stdout. Logs and CLI help/errors go to stderr.
+
+## First 5 Minutes
+
+1. Build the binary:
+
+```sh
+cargo build --release
+```
+
+2. Confirm local dependencies:
+
+```sh
+rust-analyzer --version
+cargo --version
+```
+
+3. Add the binary to your MCP client config with `--workspace /absolute/path/to/project`.
+
+4. Call `server_info` from the client. It reports the active workspace, server version, stdio transport, cargo tool state, rust-analyzer path/version, cargo path/version, limits, and advertised tool groups.
 
 ## Claude Code
 
@@ -109,6 +128,18 @@ All tools return pretty JSON as MCP text content:
 
 Recoverable errors return `ok: false` with an `error` and `hint`.
 
+### `server_info`
+
+Report local runtime and readiness information.
+
+Params:
+
+```json
+{}
+```
+
+The response includes server name/version, stdio transport, active workspace root, workspace warnings, whether cargo tools are enabled, rust-analyzer path/version, cargo path/version, output and timeout limits, and tool groups.
+
 ### `ra_set_workspace`
 
 Change the active workspace root and restart rust-analyzer.
@@ -145,6 +176,23 @@ Params:
 }
 ```
 
+### `ra_implementations`
+
+Find implementations for a trait, type, or symbol at a position.
+
+Params:
+
+```json
+{
+  "file_path": "src/lib.rs",
+  "line": 0,
+  "character": 7,
+  "max_results": 50,
+  "context_lines": 8,
+  "include_snippets": true
+}
+```
+
 ### `ra_references`
 
 Find references at a position.
@@ -171,6 +219,16 @@ Params:
 
 ```json
 { "file_path": "src/lib.rs" }
+```
+
+### `ra_workspace_symbols`
+
+Search workspace-wide symbols by query.
+
+Params:
+
+```json
+{ "query": "Parser", "max_results": 50 }
 ```
 
 ### `ra_completion`
@@ -205,6 +263,34 @@ Params:
 }
 ```
 
+The response includes `total`, `returned`, `groups`, and optional `raw_hints`. The top-level `truncated` flag is true when `max_hints` limits output.
+
+### `ra_macro_expansion`
+
+Preview rust-analyzer macro expansion at a position. The tool does not mutate files.
+
+Params:
+
+```json
+{ "file_path": "src/lib.rs", "line": 0, "character": 7 }
+```
+
+### `ra_call_hierarchy`
+
+Return prepared call hierarchy items with bounded incoming and outgoing calls.
+
+Params:
+
+```json
+{
+  "file_path": "src/lib.rs",
+  "line": 0,
+  "character": 7,
+  "max_items": 20,
+  "max_calls_per_item": 50
+}
+```
+
 ### `ra_format`
 
 Return formatting text edits for a file without applying them.
@@ -233,7 +319,7 @@ Params:
 
 ### `ra_rename_preview`
 
-Return workspace edits for a symbol rename without applying them.
+Return the workspace edits rust-analyzer would make for a symbol rename without applying them.
 
 Params:
 
@@ -242,9 +328,11 @@ Params:
   "file_path": "src/lib.rs",
   "line": 0,
   "character": 7,
-  "new_name": "renamed_symbol"
+  "new_name": "new_symbol_name"
 }
 ```
+
+The response includes the raw LSP `workspace_edit` plus `document_count`, `change_count`, and `resource_operation_count` summary fields.
 
 ### `ra_diagnostics`
 
@@ -418,8 +506,9 @@ When metadata JSON parses successfully, the response includes `metadata_json` an
 - Symlink escapes and `..` escapes are rejected.
 - External crate locations returned by rust-analyzer are marked as external dependency source.
 - External snippets are readonly, bounded, and only read when the URI came from rust-analyzer.
-- Rust-analyzer query tools are readonly analysis tools.
-- `ra_format`, `ra_code_actions`, and `ra_rename_preview` return edit previews only. They never write those edits to disk.
+- `server_info` is readonly and reports local runtime readiness.
+- `ra_*` tools are readonly analysis and preview tools.
+- `ra_format`, `ra_code_actions`, `ra_macro_expansion`, and `ra_rename_preview` return previews only. They never write edits to disk.
 - `ra_set_workspace` mutates server state by switching the active workspace and restarting rust-analyzer. It does not write workspace files.
 - `cargo_*` tools execute fixed cargo commands in the active workspace. They do not expose arbitrary shell commands or free-form cargo subcommands.
 - Cargo commands may execute workspace code, build scripts, proc macros, and tests. Those executions can have arbitrary project-defined side effects, write artifacts under `target/`, and update `Cargo.lock` unless `locked` or `frozen` is used.
@@ -474,21 +563,18 @@ Do not add `println!`, banners, or stdout logging to this server. stdout is rese
 
 Definitions and references can point into Cargo registry or rustup source paths. These are returned as external dependency source locations, with bounded snippets when safe.
 
-## Phase-Two Ideas
+## Current Scope
 
-These are intentionally not advertised in `tools/list` until implemented:
+The public MVP is local stdio only. It intentionally does not include an HTTP transport, hosted mode, authentication, multi-user state, or write/apply file-editing tools.
 
-- workspace symbols
-- implementations
-- macro expansion
-- call hierarchy
+Future expansion should stay within the same safety model unless the server explicitly grows a separate remote transport design.
 
 ## Development
 
 ```sh
 cargo fmt
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all
 ```
 

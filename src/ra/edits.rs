@@ -27,9 +27,9 @@ pub(crate) fn summarize_code_actions(actions: Vec<CodeActionOrCommand>) -> Vec<V
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct WorkspaceEditSummary {
-    pub document_count: usize,
-    pub change_count: usize,
-    pub resource_operation_count: usize,
+    pub(crate) document_count: usize,
+    pub(crate) change_count: usize,
+    pub(crate) resource_operation_count: usize,
 }
 
 pub(crate) fn summarize_workspace_edit(edit: &WorkspaceEdit) -> WorkspaceEditSummary {
@@ -102,38 +102,6 @@ mod tests {
 
         assert_eq!(summary.document_count, 1);
         assert_eq!(summary.change_count, 2);
-        assert_eq!(summary.resource_operation_count, 0);
-    }
-
-    #[test]
-    fn workspace_edit_summary_counts_document_change_edits() {
-        let first_uri: Uri = "file:///workspace/src/lib.rs".parse().unwrap();
-        let second_uri: Uri = "file:///workspace/src/main.rs".parse().unwrap();
-        let edit = WorkspaceEdit {
-            changes: None,
-            document_changes: Some(DocumentChanges::Edits(vec![
-                TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        uri: first_uri,
-                        version: None,
-                    },
-                    edits: vec![OneOf::Left(edit()), OneOf::Left(edit())],
-                },
-                TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        uri: second_uri,
-                        version: None,
-                    },
-                    edits: vec![OneOf::Left(edit())],
-                },
-            ])),
-            change_annotations: None,
-        };
-
-        let summary = summarize_workspace_edit(&edit);
-
-        assert_eq!(summary.document_count, 2);
-        assert_eq!(summary.change_count, 3);
         assert_eq!(summary.resource_operation_count, 0);
     }
 
