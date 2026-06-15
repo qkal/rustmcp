@@ -1,5 +1,6 @@
 use std::{env, path::PathBuf};
 
+use clap::Parser;
 use rust_analyzer_mcp::server::{RaMcpServer, ServerConfig};
 use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
 
@@ -13,28 +14,42 @@ impl<'a> MakeWriter<'a> for StderrWriter {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(
+    name = "rust-analyzer-mcp",
+    version,
+    about = "A stdio MCP server that exposes rust-analyzer intelligence to coding agents.",
+    long_about = concat!(
+        "Provides read-only Rust IDE features (via rust-analyzer) and controlled Cargo tools ",
+        "to MCP-compatible AI coding agents.\n\n",
+        "All MCP protocol messages go to stdout. Human-readable output goes to stderr."
+    )
+)]
+struct Cli {
+    /// Set the Rust workspace root (defaults to current working directory)
+    #[arg(long, value_name = "PATH")]
+    workspace: Option<PathBuf>,
+
+    /// Disable all `cargo_*` tools (they will return structured "disabled" responses)
+    #[arg(long)]
+    disable_cargo_tools: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    let (workspace, config) = match parse_args(env::args().skip(1)) {
-        Ok(Command::Serve { workspace, config }) => (workspace, config),
-        Ok(Command::Help) => {
-            print_help();
-            return Ok(());
-        }
-        Ok(Command::Version) => {
-            eprintln!("rust-analyzer-mcp {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
-        }
-        Err(message) => {
-            eprintln!("error: {message}");
-            print_help();
-            std::process::exit(2);
-        }
+    let cli = Cli::parse();
+
+    let config = ServerConfig {
+        cargo_tools_enabled: !cli.disable_cargo_tools,
     };
 
-    let server = RaMcpServer::with_config(workspace.unwrap_or(env::current_dir()?), config)?;
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| env::current_dir().expect("failed to get current directory"));
+
+    let server = RaMcpServer::with_config(workspace, config)?;
     let running = rmcp::serve_server(server, rmcp::transport::stdio()).await?;
     let _reason = running.waiting().await?;
     Ok(())
@@ -47,55 +62,4 @@ fn init_logging() {
         .with_writer(StderrWriter)
         .with_ansi(false)
         .try_init();
-}
-
-enum Command {
-    Serve {
-        workspace: Option<PathBuf>,
-        config: ServerConfig,
-    },
-    Help,
-    Version,
-}
-
-fn parse_args<I>(args: I) -> Result<Command, String>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut workspace = None;
-    let mut config = ServerConfig::default();
-    let mut iter = args.into_iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--help" | "-h" => return Ok(Command::Help),
-            "--version" | "-V" => return Ok(Command::Version),
-            "--workspace" => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| "--workspace requires a path".to_string())?;
-                workspace = Some(PathBuf::from(value));
-            }
-            "--disable-cargo-tools" => {
-                config.cargo_tools_enabled = false;
-            }
-            other => return Err(format!("unknown argument {other:?}")),
-        }
-    }
-
-    Ok(Command::Serve { workspace, config })
-}
-
-fn print_help() {
-    eprintln!("rust-analyzer-mcp");
-    eprintln!();
-    eprintln!("USAGE:");
-    eprintln!("  rust-analyzer-mcp [--workspace <path>] [--disable-cargo-tools]");
-    eprintln!();
-    eprintln!("OPTIONS:");
-    eprintln!("  --workspace <path>       Set the Rust workspace root.");
-    eprintln!(
-        "  --disable-cargo-tools    List cargo tools but return structured disabled failures."
-    );
-    eprintln!();
-    eprintln!("All MCP protocol messages are written to stdout. Human output is stderr only.");
 }
