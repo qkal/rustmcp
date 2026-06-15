@@ -19,14 +19,18 @@ impl<'a> MakeWriter<'a> for StderrWriter {
     name = "rust-analyzer-mcp",
     version,
     about = "A stdio MCP server that exposes rust-analyzer intelligence to coding agents.",
-    long_about = "Provides read-only Rust IDE features (via rust-analyzer) and controlled Cargo tools to MCP-compatible AI coding agents.\n\nAll MCP protocol messages go to stdout. Human-readable output goes to stderr."
+    long_about = concat!(
+        "Provides read-only Rust IDE features (via rust-analyzer) and controlled Cargo tools ",
+        "to MCP-compatible AI coding agents.\n\n",
+        "All MCP protocol messages go to stdout. Human-readable output goes to stderr."
+    )
 )]
 struct Cli {
     /// Set the Rust workspace root (defaults to current working directory)
     #[arg(long, value_name = "PATH")]
     workspace: Option<PathBuf>,
 
-    /// Disable all cargo_* tools (they will return structured \"disabled\" responses)
+    /// Disable all `cargo_*` tools (they will return structured "disabled" responses)
     #[arg(long)]
     disable_cargo_tools: bool,
 }
